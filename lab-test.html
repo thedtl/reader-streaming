@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DTL Dropbox Reader Lab Test</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #5f697a;
+      --line: #d8dee8;
+      --panel: #ffffff;
+      --back: #f5f7fa;
+      --blue: #154889;
+      --red: #af161c;
+      --green: #197a4d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--back);
+      color: var(--ink);
+      font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 28px 18px 48px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0 0 16px;
+      color: var(--muted);
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      margin: 16px 0;
+    }
+    label {
+      display: block;
+      font-weight: 650;
+      margin: 12px 0 6px;
+    }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 11px 12px;
+      font: inherit;
+      background: #fff;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    button, a.button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 14px;
+      font: inherit;
+      font-weight: 750;
+      cursor: pointer;
+      text-decoration: none;
+      color: #fff;
+      background: var(--blue);
+      margin-top: 14px;
+    }
+    .note {
+      border-left: 4px solid var(--blue);
+      padding: 10px 12px;
+      background: #eef4ff;
+      color: #26364f;
+      border-radius: 4px;
+    }
+    .ok { border-left-color: var(--green); background: #eefaf3; }
+    .error { border-left-color: var(--red); background: #fff1f1; color: #5f1618; }
+    .hidden { display: none; }
+    code {
+      background: #edf1f7;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+    @media (max-width: 620px) {
+      .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>DTL Dropbox Reader Lab Test</h1>
+    <p>This page creates a test reader link using the lab Cloudflare Worker. It does not save your staff password.</p>
+
+    <section>
+      <p class="note">For this test, paste either a Dropbox shared link or a Dropbox file path such as <code>/Folder/Book.pdf</code>.</p>
+
+      <label for="workerUrl">Worker URL</label>
+      <input id="workerUrl" value="https://dtl-chapter-reader-dropbox-lab.reference-dfe.workers.dev">
+
+      <label for="staffPassword">Staff password</label>
+      <input id="staffPassword" type="password" autocomplete="off">
+
+      <label for="dropboxPath">Dropbox shared link or file path</label>
+      <input id="dropboxPath" placeholder="Paste your Dropbox PDF link here" spellcheck="false">
+
+      <div class="row">
+        <div>
+          <label for="startPage">Start page</label>
+          <input id="startPage" type="number" min="1" value="1">
+        </div>
+        <div>
+          <label for="endPage">End page</label>
+          <input id="endPage" type="number" min="1" value="3">
+        </div>
+      </div>
+
+      <label for="chapterName">Chapter name</label>
+      <input id="chapterName" value="Dropbox lab test">
+
+      <button id="createLink">Create Test Reader Link</button>
+      <p id="status" class="note hidden"></p>
+    </section>
+
+    <section id="result" class="hidden">
+      <p class="note ok">Test link created. Open it in this same browser tab.</p>
+      <a id="readerLink" class="button" href="#">Open Reader</a>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    const resultEl = document.getElementById("result");
+    const readerLink = document.getElementById("readerLink");
+
+    function showStatus(text, type = "") {
+      statusEl.textContent = text;
+      statusEl.className = "note" + (type ? " " + type : "");
+      statusEl.classList.remove("hidden");
+    }
+
+    document.getElementById("createLink").addEventListener("click", async () => {
+      resultEl.classList.add("hidden");
+
+      const workerUrl = document.getElementById("workerUrl").value.trim().replace(/\/+$/, "");
+      const password = document.getElementById("staffPassword").value;
+      const dropbox = document.getElementById("dropboxPath").value.trim();
+      const start = document.getElementById("startPage").value;
+      const end = document.getElementById("endPage").value;
+      const chapter = document.getElementById("chapterName").value.trim() || "Dropbox lab test";
+
+      if (!workerUrl || !password || !dropbox || !start || !end) {
+        showStatus("Fill in every field first.", "error");
+        return;
+      }
+
+      showStatus("Asking the lab Worker to create a signed test link...");
+
+      const signUrl = new URL(workerUrl + "/sign");
+      signUrl.searchParams.set("password", password);
+      signUrl.searchParams.set("dropbox", dropbox);
+      signUrl.searchParams.set("start", start);
+      signUrl.searchParams.set("end", end);
+      signUrl.searchParams.set("chapter", chapter);
+
+      const response = await fetch(signUrl);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.token) {
+        showStatus(data.error || "Could not create a test link.", "error");
+        return;
+      }
+
+      const chapterPdfUrl = new URL(workerUrl + "/");
+      chapterPdfUrl.searchParams.set("token", data.token);
+
+      showStatus("Starting a short reader session...");
+      const sessionUrl = new URL(workerUrl + "/reader-session");
+      sessionUrl.searchParams.set("token", data.token);
+      const sessionResponse = await fetch(sessionUrl);
+      const sessionData = await sessionResponse.json().catch(() => ({}));
+      if (!sessionResponse.ok || !sessionData.session) {
+        showStatus(sessionData.error || "The Worker did not start a reader session.", "error");
+        return;
+      }
+      chapterPdfUrl.searchParams.set("session", sessionData.session);
+
+      showStatus("Checking that the Worker can return a chapter-only PDF...");
+      const pdfResponse = await fetch(chapterPdfUrl, {
+        headers: { range: "bytes=0-1023" },
+      });
+      if (!pdfResponse.ok && pdfResponse.status !== 206) {
+        const text = await pdfResponse.text();
+        let message = text;
+        try {
+          const errorData = JSON.parse(text);
+          message = [
+            errorData.error,
+            errorData.hint,
+            errorData.details,
+          ].filter(Boolean).join(" ");
+        } catch {}
+        showStatus(message || "The Worker did not return a chapter-only PDF.", "error");
+        return;
+      }
+
+      const viewerUrl = new URL("web/viewer.html", location.href);
+      const viewerPdfUrl = new URL(workerUrl + "/");
+      viewerPdfUrl.searchParams.set("token", data.token);
+      viewerUrl.searchParams.set("file", viewerPdfUrl.toString());
+
+      readerLink.href = viewerUrl.toString();
+      resultEl.classList.remove("hidden");
+      showStatus(
+        "Signed chapter-only PDF reader link created.",
+        "ok"
+      );
+    });
+  </script>
+</body>
+</html>

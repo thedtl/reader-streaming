@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dtl-chapter-reader-streaming",
+  "main": "src/index.js",
+  "account_id": "dfe98966f4ed213d2c127b6c7a09d214",
+  "compatibility_date": "2026-10-02",
+  "workers_dev": true,
+  "vars": {
+    "ALLOWED_ORIGINS": "http://localhost:8000,http://127.0.0.1:8000,https://thedtl.github.io",
+    "ALLOWED_PDF_REQUEST_ORIGINS": "http://localhost:8000,http://127.0.0.1:8000,https://thedtl.github.io",
+    "SLICER_SERVICE_URL": "https://dtl-chapter-slicer-streaming-246902611372.us-central1.run.app"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": false },
+    // Automatic traces include token-bearing request URLs. Do not sample them.
+    "traces": { "enabled": true, "head_sampling_rate": 0 }
+  }
+}

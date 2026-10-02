@@ -1,0 +1,1627 @@
+<!doctype html>
+<!--
+Copyright 2012 Mozilla Foundation
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+Adobe CMap resources are covered by their own copyright but the same license:
+
+    Copyright 1990-2015 Adobe Systems Incorporated.
+
+See https://github.com/adobe-type-tools/cmap-resources
+-->
+<html dir="ltr" mozdisallowselectionprint>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <meta name="google" content="notranslate" />
+    <title>DTL Reader — Streaming</title>
+
+<!-- DTL: Hide sidebar toggle button and sidebar -->
+<style>
+  #sidebarToggleButton,
+  #sidebarContainer,
+  #viewBookmark,
+  #viewBookmarkSeparator {
+    display: none !important;
+  }
+</style>
+
+<!-- BACK BUTTON TRAP (V2: ALWAYS ARM + BEFOREUNLOAD FALLBACK) -->
+<script>
+(function () {
+  "use strict";
+
+  // =============================================================
+  // DTL BACK BUTTON PROTECTION
+  // Strategy:
+  // 1. ALWAYS show gesture gate on page load (creates fresh history buffer)
+  // 2. beforeunload fires as fallback if user tries to leave
+  // 3. popstate catches back button and shows session ended overlay
+  // =============================================================
+
+  // DTL palette
+  const DTL_BLUE = "#154889";
+  const DTL_BLUE_HOVER = "#123F79";
+  const DTL_RED = "#AF161C";
+  const TEXT = "#1f2937";
+  const MUTED = "#6b7280";
+
+  const SESSION_KEY = "dtlStreamingTrapArmed";
+  const BUFFER_STATES = 200; // how many Back presses to absorb
+  const PREPARING_MIN_MS = 750;
+  const PREPARING_DOT_MS = 600;
+  const PREPARING_SLOW_HINT_MS = 4500;
+
+  // Track if trap is armed THIS page load (not just sessionStorage)
+  let trapArmedThisSession = false;
+  let readingGestureStarted = false;
+  let resolveReadingGesture = null;
+  let preparingStartedAt = 0;
+  let preparingDotsTimer = null;
+  let preparingSlowHintTimer = null;
+  let preparingDotCount = 0;
+  let preparingFinishHooked = false;
+  let preparingFinished = false;
+  const readingGesturePromise = new Promise(function(resolve) {
+    resolveReadingGesture = resolve;
+  });
+
+  function isArmed() {
+    return trapArmedThisSession;
+  }
+
+  function wait(ms) {
+    return new Promise(function(resolve) {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  function resolveReadingGestureOnce() {
+    if (readingGestureStarted) return;
+    readingGestureStarted = true;
+    if (resolveReadingGesture) resolveReadingGesture();
+  }
+
+  window.DTL_waitForReadingGesture = function() {
+    return readingGestureStarted ? Promise.resolve() : readingGesturePromise;
+  };
+
+  function stopPreparingTimers() {
+    if (preparingDotsTimer) {
+      clearInterval(preparingDotsTimer);
+      preparingDotsTimer = null;
+    }
+    if (preparingSlowHintTimer) {
+      clearTimeout(preparingSlowHintTimer);
+      preparingSlowHintTimer = null;
+    }
+  }
+
+  function setPreparingTitle() {
+    const title = document.getElementById("dtl-gate-title");
+    if (!title) return;
+    const dots = ".".repeat(preparingDotCount);
+    title.textContent = "Preparing chapter" + dots;
+    preparingDotCount = preparingDotCount >= 3 ? 0 : preparingDotCount + 1;
+  }
+
+  window.DTL_showPreparingChapter = function() {
+    const gate = document.getElementById("dtl-gesture-gate");
+    if (!gate) return;
+
+    preparingStartedAt = Date.now();
+    preparingDotCount = 0;
+    stopPreparingTimers();
+
+    const card = gate.querySelector("#dtl-gate-card");
+    const message = gate.querySelector("#dtl-gate-message");
+    const startButton = gate.querySelector("#dtl-start-reading");
+    const note = gate.querySelector("#dtl-gate-note");
+    const firefoxNote = gate.querySelector("#dtl-gate-firefox-note");
+    const slowHint = gate.querySelector("#dtl-gate-slow-hint");
+
+    if (card) card.style.transform = "scale(1)";
+    if (message) {
+      message.textContent = "Your chapter will open as soon as it is ready.";
+      message.setAttribute("aria-live", "polite");
+    }
+    if (startButton) {
+      startButton.disabled = true;
+      startButton.style.display = "none";
+    }
+    if (note) note.style.display = "none";
+    if (firefoxNote) firefoxNote.style.display = "none";
+    if (slowHint) slowHint.style.display = "none";
+
+    setPreparingTitle();
+    preparingDotsTimer = setInterval(setPreparingTitle, PREPARING_DOT_MS);
+    preparingSlowHintTimer = setTimeout(function() {
+      if (slowHint) slowHint.style.display = "block";
+    }, PREPARING_SLOW_HINT_MS);
+  };
+
+  window.DTL_finishPreparingChapter = async function() {
+    const gate = document.getElementById("dtl-gesture-gate");
+    if (!gate) return;
+    if (preparingFinished) return;
+    preparingFinished = true;
+
+    const elapsed = preparingStartedAt ? Date.now() - preparingStartedAt : PREPARING_MIN_MS;
+    if (elapsed < PREPARING_MIN_MS) {
+      await wait(PREPARING_MIN_MS - elapsed);
+    }
+
+    stopPreparingTimers();
+    gate.style.opacity = "0";
+    const card = gate.querySelector("#dtl-gate-card");
+    if (card) card.style.transform = "scale(0.95)";
+
+    setTimeout(function() {
+      gate.remove();
+    }, 200);
+  };
+
+  window.DTL_armPreparingFinish = function() {
+    if (preparingFinishHooked) return;
+    preparingFinishHooked = true;
+
+    function finishOnce() {
+      if (window.DTL_finishPreparingChapter) {
+        window.DTL_finishPreparingChapter();
+      }
+    }
+
+    function attachWhenReady() {
+      const app = window.PDFViewerApplication;
+      const eventBus = app && app.eventBus;
+      if (!eventBus || !eventBus.on) {
+        setTimeout(attachWhenReady, 50);
+        return;
+      }
+
+      ["documentinit", "documentloaded", "pagerendered", "documenterror"].forEach(function(eventName) {
+        eventBus.on(eventName, finishOnce, { once: true });
+      });
+    }
+
+    attachWhenReady();
+  };
+
+  // Clear stale sessionStorage on page load (history buffer doesn't persist)
+  try {
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch (e) {}
+
+  // =============================================================
+  // BEFOREUNLOAD FALLBACK
+  // This fires when user tries to leave the page by ANY means
+  // Shows browser-native "Leave site?" dialog
+  // =============================================================
+  function enableBeforeUnload() {
+    window.addEventListener("beforeunload", function (e) {
+      if (!isArmed()) return;
+      
+      // Standard way to trigger the dialog
+      e.preventDefault();
+      // Legacy browsers need returnValue set
+      e.returnValue = "";
+      return "";
+    });
+    console.log("[DTL] beforeunload fallback enabled");
+  }
+
+  // =============================================================
+  // SESSION ENDED OVERLAY
+  // =============================================================
+  function showSessionEndedOverlay() {
+    if (document.getElementById("dtl-session-ended-overlay")) return;
+
+    const overlay = document.createElement("div");
+    overlay.id = "dtl-session-ended-overlay";
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:2147483647;" +
+      "background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;" +
+      "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:20px;";
+
+    overlay.innerHTML =
+      '<div style="background:white;max-width:460px;width:100%;border-radius:16px;padding:38px 30px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3);">' +
+        '<div style="font-size:56px;margin-bottom:14px;">🔒</div>' +
+        '<div style="font-size:22px;font-weight:800;color:' + TEXT + ';margin-bottom:10px;">Session Ended</div>' +
+        '<div style="color:' + MUTED + ';line-height:1.6;margin-bottom:18px;">Your viewing session has ended. For copyright protection, you cannot return to the previous page.</div>' +
+        '<button id="dtl-session-return" style="width:100%;padding:14px 18px;border:0;border-radius:10px;background:' + DTL_BLUE + ';color:white;font-weight:800;font-size:15px;cursor:pointer;margin-bottom:12px;">📖 Return to Chapter</button>' +
+        '<div style="display:flex;flex-direction:column;gap:12px;margin-top:6px;">' +
+          '<a href="https://dtl.primo.exlibrisgroup.com/nde/home?vid=01DTL_INST:DTL1&lang=en" style="display:block;padding:14px 18px;border-radius:10px;background:' + DTL_RED + ';color:white;text-decoration:none;font-weight:800;">📖 DTL Catalog</a>' +
+        "</div>" +
+        '<div style="color:#9ca3af;font-size:12px;margin-top:14px;line-height:1.5;">Need help? Contact your librarian for assistance.</div>' +
+      "</div>";
+
+    document.body.appendChild(overlay);
+    
+    // Add click handler for Return to Chapter button
+    const returnBtn = document.getElementById("dtl-session-return");
+    if (returnBtn) {
+      returnBtn.addEventListener("click", function() {
+        overlay.remove();
+      });
+      returnBtn.addEventListener("mouseenter", function() {
+        returnBtn.style.background = DTL_BLUE_HOVER;
+      });
+      returnBtn.addEventListener("mouseleave", function() {
+        returnBtn.style.background = DTL_BLUE;
+      });
+    }
+  }
+
+  // =============================================================
+  // ARM TRAP WITH USER GESTURE
+  // Safari requires user gesture to reliably push history states
+  // =============================================================
+  function armTrapWithGesture() {
+    try {
+      // Get base URL without any existing hash
+      const baseUrl = location.href.split('#')[0];
+      
+      // Establish a base state
+      history.replaceState({ dtlTrap: true, i: 0 }, "", baseUrl + '#dtl0');
+
+      // Push a buffer of states with unique hashes
+      // Firefox requires distinct URLs to enable the back button
+      for (let i = 1; i <= BUFFER_STATES; i++) {
+        history.pushState({ dtlTrap: true, i }, "", baseUrl + '#dtl' + i);
+      }
+
+      trapArmedThisSession = true;
+      sessionStorage.setItem(SESSION_KEY, "1");
+      
+      // Enable beforeunload as backup
+      enableBeforeUnload();
+      
+      console.log("[DTL] Back trap armed with buffer:", BUFFER_STATES);
+    } catch (e) {
+      console.warn("[DTL] Failed to arm trap:", e);
+      // Even if history fails, enable beforeunload
+      trapArmedThisSession = true;
+      enableBeforeUnload();
+    }
+  }
+
+  // =============================================================
+  // POPSTATE HANDLER
+  // =============================================================
+  
+  // Detect Firefox (handles history differently during popstate)
+  const isFirefox = typeof navigator !== 'undefined' && 
+    /Firefox/i.test(navigator.userAgent);
+  
+  function handlePopState(evt) {
+    if (!isArmed()) return;
+
+    console.log("[DTL] popstate fired, showing session ended.");
+    showSessionEndedOverlay();
+    
+    // Push user forward in the history buffer
+    // Firefox needs a delay to properly render the overlay before history manipulation
+    if (isFirefox) {
+      // In Firefox, delay history restoration to ensure overlay renders
+      setTimeout(function() {
+        try {
+          history.go(BUFFER_STATES);
+        } catch (e) {}
+      }, 50);
+    } else {
+      try {
+        history.go(BUFFER_STATES);
+      } catch (e) {}
+    }
+  }
+
+  window.addEventListener("popstate", handlePopState);
+
+  // =============================================================
+  // BFCACHE HANDLER (Safari)
+  // =============================================================
+  window.addEventListener("pageshow", function (event) {
+    if (event && event.persisted) {
+      console.log("[DTL] Restored from bfcache");
+      // If we were armed before bfcache, show overlay
+      try {
+        if (sessionStorage.getItem(SESSION_KEY) === "1") {
+          showSessionEndedOverlay();
+        }
+      } catch (e) {}
+    }
+  });
+
+  // =============================================================
+  // GESTURE GATE
+  // ALWAYS shows on page load to create fresh history buffer
+  // =============================================================
+  function showGestureGate() {
+    // Remove any existing gate (safety)
+    const existing = document.getElementById("dtl-gesture-gate");
+    if (existing) existing.remove();
+
+    const gate = document.createElement("div");
+    gate.id = "dtl-gesture-gate";
+    gate.style.cssText =
+      "position:fixed;inset:0;z-index:2147483647;" +
+      "background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;" +
+      "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:20px;" +
+      "opacity:0;transition:opacity 0.2s ease;";
+
+    gate.innerHTML =
+      '<div style="background:white;max-width:460px;width:100%;border-radius:16px;padding:34px 28px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3);transform:scale(0.95);transition:transform 0.2s ease;" id="dtl-gate-card">' +
+        '<div id="dtl-gate-icon" style="font-size:52px;margin-bottom:14px;">📖</div>' +
+        '<div id="dtl-gate-title" aria-live="polite" style="font-size:22px;font-weight:800;color:' + TEXT + ';margin-bottom:10px;min-height:28px;">Start Reading</div>' +
+        '<div id="dtl-gate-message" style="color:' + MUTED + ';line-height:1.6;margin-bottom:18px;">Click below to begin your secure viewing session.</div>' +
+        '<button id="dtl-start-reading" style="width:100%;padding:14px 18px;border:0;border-radius:10px;background:' + DTL_BLUE + ';color:white;font-weight:800;font-size:15px;cursor:pointer;transition:background 0.15s ease;">Begin Session</button>' +
+        '<div id="dtl-gate-note" style="color:#9ca3af;font-size:12px;margin-top:12px;line-height:1.5;">Using the browser back button will end your session.</div>' +
+        '<div id="dtl-gate-slow-hint" style="display:none;color:#9ca3af;font-size:12px;margin-top:12px;line-height:1.5;">Large chapters may take a few moments.</div>' +
+        '<div id="dtl-gate-firefox-note" style="color:#9ca3af;font-size:11px;margin-top:8px;line-height:1.4;font-style:italic;">Firefox users: The back button may appear disabled for copyright protection.</div>' +
+      "</div>";
+
+    function attach() {
+      document.body.appendChild(gate);
+      
+      // Trigger fade in
+      requestAnimationFrame(function() {
+        gate.style.opacity = "1";
+        const card = gate.querySelector("#dtl-gate-card");
+        if (card) card.style.transform = "scale(1)";
+      });
+
+      const btn = gate.querySelector("#dtl-start-reading");
+      if (btn) {
+        btn.addEventListener(
+          "click",
+          function () {
+            // Arm the trap with this user gesture
+            armTrapWithGesture();
+            resolveReadingGestureOnce();
+            window.DTL_showPreparingChapter();
+          },
+          { once: true }
+        );
+        
+        btn.addEventListener("mouseenter", function () {
+          btn.style.background = DTL_BLUE_HOVER;
+        });
+        btn.addEventListener("mouseleave", function () {
+          btn.style.background = DTL_BLUE;
+        });
+      }
+    }
+
+    if (document.body) attach();
+    else document.addEventListener("DOMContentLoaded", attach, { once: true });
+  }
+
+  // =============================================================
+  // INITIALIZE
+  // Always show gesture gate on page load
+  // =============================================================
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", showGestureGate, { once: true });
+  } else {
+    showGestureGate();
+  }
+})();
+</script>
+
+<!-- This snippet is used in production (included from viewer.html) -->
+<link rel="resource" type="application/l10n" href="locale/locale.json" />
+<script src="../build/pdf.mjs" type="module"></script>
+
+    <link rel="stylesheet" href="viewer.css" />
+
+  <script src="viewer.mjs" type="module"></script>
+  </head>
+
+  <body tabindex="0">
+    <div id="outerContainer">
+      <span id="viewer-alert" class="visuallyHidden" role="alert"></span>
+
+      <div id="sidebarContainer">
+        <div id="toolbarSidebar" class="toolbarHorizontalGroup">
+          <div id="toolbarSidebarLeft">
+            <div id="sidebarViewButtons" class="toolbarHorizontalGroup toggled" role="radiogroup">
+              <button
+                id="viewThumbnail"
+                class="toolbarButton toggled"
+                type="button"
+                tabindex="0"
+                data-l10n-id="pdfjs-thumbs-button"
+                role="radio"
+                aria-checked="true"
+                aria-controls="thumbnailView"
+              >
+                <span data-l10n-id="pdfjs-thumbs-button-label"></span>
+              </button>
+              <button
+                id="viewOutline"
+                class="toolbarButton"
+                type="button"
+                tabindex="0"
+                data-l10n-id="pdfjs-document-outline-button"
+                role="radio"
+                aria-checked="false"
+                aria-controls="outlineView"
+              >
+                <span data-l10n-id="pdfjs-document-outline-button-label"></span>
+              </button>
+              <button
+                id="viewAttachments"
+                class="toolbarButton"
+                type="button"
+                tabindex="0"
+                data-l10n-id="pdfjs-attachments-button"
+                role="radio"
+                aria-checked="false"
+                aria-controls="attachmentsView"
+              >
+                <span data-l10n-id="pdfjs-attachments-button-label"></span>
+              </button>
+              <button
+                id="viewLayers"
+                class="toolbarButton"
+                type="button"
+                tabindex="0"
+                data-l10n-id="pdfjs-layers-button"
+                role="radio"
+                aria-checked="false"
+                aria-controls="layersView"
+              >
+                <span data-l10n-id="pdfjs-layers-button-label"></span>
+              </button>
+            </div>
+          </div>
+
+          <div id="toolbarSidebarRight">
+            <div id="outlineOptionsContainer" class="toolbarHorizontalGroup">
+              <div class="verticalToolbarSeparator"></div>
+
+              <button
+                id="currentOutlineItem"
+                class="toolbarButton"
+                type="button"
+                disabled="disabled"
+                tabindex="0"
+                data-l10n-id="pdfjs-current-outline-item-button"
+              >
+                <span data-l10n-id="pdfjs-current-outline-item-button-label"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div id="sidebarContent">
+          <div id="thumbnailView"></div>
+          <div id="outlineView" class="hidden"></div>
+          <div id="attachmentsView" class="hidden"></div>
+          <div id="layersView" class="hidden"></div>
+        </div>
+        <div id="sidebarResizer"></div>
+      </div>
+      <!-- sidebarContainer -->
+
+      <div id="mainContainer">
+        <div class="toolbar">
+          <div id="toolbarContainer">
+            <div id="toolbarViewer" class="toolbarHorizontalGroup">
+              <div id="toolbarViewerLeft" class="toolbarHorizontalGroup">
+                <button
+                  id="sidebarToggleButton"
+                  class="toolbarButton"
+                  type="button"
+                  tabindex="0"
+                  data-l10n-id="pdfjs-toggle-sidebar-button"
+                  aria-expanded="false"
+                  aria-haspopup="true"
+                  aria-controls="sidebarContainer"
+                >
+                  <span data-l10n-id="pdfjs-toggle-sidebar-button-label"></span>
+                </button>
+                <div class="toolbarButtonSpacer"></div>
+                <div class="toolbarButtonWithContainer">
+                  <button
+                    id="viewFindButton"
+                    class="toolbarButton"
+                    type="button"
+                    tabindex="0"
+                    data-l10n-id="pdfjs-findbar-button"
+                    aria-expanded="false"
+                    aria-controls="findbar"
+                  >
+                    <span data-l10n-id="pdfjs-findbar-button-label"></span>
+                  </button>
+                  <div class="hidden doorHanger toolbarHorizontalGroup" id="findbar">
+                    <div id="findInputContainer" class="toolbarHorizontalGroup">
+                      <span class="loadingInput end toolbarHorizontalGroup">
+                        <input id="findInput" class="toolbarField" tabindex="0" data-l10n-id="pdfjs-find-input" aria-invalid="false" />
+                      </span>
+                      <div class="toolbarHorizontalGroup">
+                        <button id="findPreviousButton" class="toolbarButton" type="button" tabindex="0" data-l10n-id="pdfjs-find-previous-button">
+                          <span data-l10n-id="pdfjs-find-previous-button-label"></span>
+                        </button>
+                        <div class="splitToolbarButtonSeparator"></div>
+                        <button id="findNextButton" class="toolbarButton" type="button" tabindex="0" data-l10n-id="pdfjs-find-next-button">
+                          <span data-l10n-id="pdfjs-find-next-button-label"></span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div id="findbarOptionsOneContainer" class="toolbarHorizontalGroup">
+                      <div class="toggleButton toolbarLabel">
+                        <input type="checkbox" id="findHighlightAll" tabindex="0" />
+                        <label for="findHighlightAll" data-l10n-id="pdfjs-find-highlight-checkbox"></label>
+                      </div>
+                      <div class="toggleButton toolbarLabel">
+                        <input type="checkbox" id="findMatchCase" tabindex="0" />
+                        <label for="findMatchCase" data-l10n-id="pdfjs-find-match-case-checkbox-label"></label>
+                      </div>
+                    </div>
+                    <div id="findbarOptionsTwoContainer" class="toolbarHorizontalGroup">
+                      <div class="toggleButton toolbarLabel">
+                        <input type="checkbox" id="findMatchDiacritics" tabindex="0" />
+                        <label for="findMatchDiacritics" data-l10n-id="pdfjs-find-match-diacritics-checkbox-label"></label>
+                      </div>
+                      <div class="toggleButton toolbarLabel">
+                        <input type="checkbox" id="findEntireWord" tabindex="0" />
+                        <label for="findEntireWord" data-l10n-id="pdfjs-find-entire-word-checkbox-label"></label>
+                      </div>
+                    </div>
+
+                    <div id="findbarMessageContainer" class="toolbarHorizontalGroup" aria-live="polite">
+                      <span id="findResultsCount" class="toolbarLabel"></span>
+                      <span id="findMsg" class="toolbarLabel"></span>
+                    </div>
+                  </div>
+                  <!-- findbar -->
+                </div>
+                <div class="toolbarHorizontalGroup hiddenSmallView">
+                  <button class="toolbarButton" type="button" id="previous" tabindex="0" data-l10n-id="pdfjs-previous-button">
+                    <span data-l10n-id="pdfjs-previous-button-label"></span>
+                  </button>
+                  <div class="splitToolbarButtonSeparator"></div>
+                  <button class="toolbarButton" type="button" id="next" tabindex="0" data-l10n-id="pdfjs-next-button">
+                    <span data-l10n-id="pdfjs-next-button-label"></span>
+                  </button>
+                </div>
+                <div class="toolbarHorizontalGroup">
+                  <span class="loadingInput start toolbarHorizontalGroup">
+                    <input
+                      type="number"
+                      id="pageNumber"
+                      class="toolbarField"
+                      value="1"
+                      min="1"
+                      tabindex="0"
+                      data-l10n-id="pdfjs-page-input"
+                      autocomplete="off"
+                    />
+                  </span>
+                  <span id="numPages" class="toolbarLabel"></span>
+                </div>
+              </div>
+              <div id="toolbarViewerMiddle" class="toolbarHorizontalGroup">
+                <div class="toolbarHorizontalGroup">
+                  <button id="zoomOutButton" class="toolbarButton" type="button" tabindex="0" data-l10n-id="pdfjs-zoom-out-button">
+                    <span data-l10n-id="pdfjs-zoom-out-button-label"></span>
+                  </button>
+                  <div class="splitToolbarButtonSeparator"></div>
+                  <button id="zoomInButton" class="toolbarButton" type="button" tabindex="0" data-l10n-id="pdfjs-zoom-in-button">
+                    <span data-l10n-id="pdfjs-zoom-in-button-label"></span>
+                  </button>
+                </div>
+                <span id="scaleSelectContainer" class="dropdownToolbarButton">
+                  <select id="scaleSelect" tabindex="0" data-l10n-id="pdfjs-zoom-select">
+                    <option id="pageAutoOption" value="auto" selected="selected" data-l10n-id="pdfjs-page-scale-auto"></option>
+                    <option id="pageActualOption" value="page-actual" data-l10n-id="pdfjs-page-scale-actual"></option>
+                    <option id="pageFitOption" value="page-fit" data-l10n-id="pdfjs-page-scale-fit"></option>
+                    <option id="pageWidthOption" value="page-width" data-l10n-id="pdfjs-page-scale-width"></option>
+                    <option
+                      id="customScaleOption"
+                      value="custom"
+                      disabled="disabled"
+                      hidden="true"
+                      data-l10n-id="pdfjs-page-scale-percent"
+                      data-l10n-args='{ "scale": 0 }'
+                    ></option>
+                    <option value="0.5" data-l10n-id="pdfjs-page-scale-percent" data-l10n-args='{ "scale": 50 }'></option>
+                    <option value="0.75" data-l10n-id="pdfjs-page-scale-percent" data-l10n-args='{ "scale": 75 }'></option>
+                    <option value="1" data-l10n-id="pdfjs-page-scale-percent" data-l10n-args='{ "scale": 100 }'></option>
+                    <option value="1.25" data-l10n-id="pdfjs-page-scale-percent" data-l10n-args='{ "scale": 125 }'></option>
+                    <option value="1.5" data-l10n-id="pdfjs-page-scale-percent" data-l10n-args='{ "scale": 150 }'></option>
+                    <option value="2" data-l10n-id="pdfjs-page-scale-percent" data-l10n-args='{ "scale": 200 }'></option>
+                    <option value="3" data-l10n-id="pdfjs-page-scale-percent" data-l10n-args='{ "scale": 300 }'></option>
+                    <option value="4" data-l10n-id="pdfjs-page-scale-percent" data-l10n-args='{ "scale": 400 }'></option>
+                  </select>
+                </span>
+              </div>
+              <div id="toolbarViewerRight" class="toolbarHorizontalGroup">
+                <div id="editorModeButtons" class="toolbarHorizontalGroup">
+                  <div id="editorComment" class="toolbarButtonWithContainer" hidden="true">
+                    <button
+                      id="editorCommentButton"
+                      class="toolbarButton"
+                      type="button"
+                      tabindex="0"
+                      disabled="disabled"
+                      aria-expanded="false"
+                      aria-haspopup="true"
+                      aria-controls="editorCommentParamsToolbar"
+                      data-l10n-id="pdfjs-editor-comment-button"
+                    >
+                      <span data-l10n-id="pdfjs-editor-comment-button-label"></span>
+                    </button>
+                    <div class="editorParamsToolbar hidden menu" id="editorCommentParamsToolbar">
+                      <div id="editorCommentsSidebar" class="menuContainer comment sidebar" role="landmark" aria-labelledby="editorCommentsSidebarHeader">
+                        <div id="editorCommentsSidebarResizer" class="sidebarResizer" role="separator" aria-controls="editorCommentsSidebar" tabindex="0"></div>
+                        <div id="editorCommentsSidebarHeader" role="heading" aria-level="2">
+                          <span class="commentCount">
+                            <span id="editorCommentsSidebarTitle" data-l10n-id="pdfjs-editor-comments-sidebar-title" data-l10n-args='{ "count": 0 }'></span>
+                            <span id="editorCommentsSidebarCount"></span>
+                          </span>
+                          <button id="editorCommentsSidebarCloseButton" type="button" tabindex="0" data-l10n-id="pdfjs-editor-comments-sidebar-close-button">
+                            <span data-l10n-id="pdfjs-editor-comments-sidebar-close-button-label"></span>
+                          </button>
+                        </div>
+                        <div id="editorCommentsSidebarListContainer" tabindex="-1">
+                          <ul id="editorCommentsSidebarList"></ul>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="editorSignature" class="toolbarButtonWithContainer" hidden="true">
+                    <button
+                      id="editorSignatureButton"
+                      class="toolbarButton"
+                      type="button"
+                      tabindex="0"
+                      disabled="disabled"
+                      aria-expanded="false"
+                      aria-haspopup="true"
+                      aria-controls="editorSignatureParamsToolbar"
+                      data-l10n-id="pdfjs-editor-signature-button"
+                    >
+                      <span data-l10n-id="pdfjs-editor-signature-button-label"></span>
+                    </button>
+                    <div class="editorParamsToolbar hidden doorHangerRight menu" id="editorSignatureParamsToolbar">
+                      <div id="addSignatureDoorHanger" class="menuContainer" role="region" data-l10n-id="pdfjs-editor-add-signature-container">
+                        <button
+                          id="editorSignatureAddSignature"
+                          class="toolbarButton labeled"
+                          type="button"
+                          tabindex="0"
+                          data-l10n-id="pdfjs-editor-signature-add-signature-button"
+                        >
+                          <span data-l10n-id="pdfjs-editor-signature-add-signature-button-label" class="editorParamsLabel"></span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="editorHighlight" class="toolbarButtonWithContainer">
+                    <button
+                      id="editorHighlightButton"
+                      class="toolbarButton"
+                      type="button"
+                      disabled="disabled"
+                      aria-expanded="false"
+                      aria-haspopup="true"
+                      aria-controls="editorHighlightParamsToolbar"
+                      tabindex="0"
+                      data-l10n-id="pdfjs-editor-highlight-button"
+                    >
+                      <span data-l10n-id="pdfjs-editor-highlight-button-label"></span>
+                    </button>
+                    <div class="editorParamsToolbar hidden doorHangerRight" id="editorHighlightParamsToolbar">
+                      <div id="highlightParamsToolbarContainer" class="editorParamsToolbarContainer">
+                        <div id="editorHighlightColorPicker" class="colorPicker">
+                          <span id="highlightColorPickerLabel" class="editorParamsLabel" data-l10n-id="pdfjs-editor-highlight-colorpicker-label"></span>
+                        </div>
+                        <div id="editorHighlightThickness">
+                          <label
+                            for="editorFreeHighlightThickness"
+                            class="editorParamsLabel"
+                            data-l10n-id="pdfjs-editor-free-highlight-thickness-input"
+                          ></label>
+                          <div class="thicknessPicker">
+                            <input
+                              type="range"
+                              id="editorFreeHighlightThickness"
+                              class="editorParamsSlider"
+                              data-l10n-id="pdfjs-editor-free-highlight-thickness-title"
+                              value="12"
+                              min="8"
+                              max="24"
+                              step="1"
+                              tabindex="0"
+                            />
+                          </div>
+                        </div>
+                        <div id="editorHighlightVisibility">
+                          <div class="divider"></div>
+                          <div class="toggler">
+                            <label for="editorHighlightShowAll" class="editorParamsLabel" data-l10n-id="pdfjs-editor-highlight-show-all-button-label"></label>
+                            <button
+                              id="editorHighlightShowAll"
+                              class="toggle-button"
+                              type="button"
+                              data-l10n-id="pdfjs-editor-highlight-show-all-button"
+                              aria-pressed="true"
+                              tabindex="0"
+                            ></button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="editorFreeText" class="toolbarButtonWithContainer">
+                    <button
+                      id="editorFreeTextButton"
+                      class="toolbarButton"
+                      type="button"
+                      disabled="disabled"
+                      aria-expanded="false"
+                      aria-haspopup="true"
+                      aria-controls="editorFreeTextParamsToolbar"
+                      tabindex="0"
+                      data-l10n-id="pdfjs-editor-free-text-button"
+                    >
+                      <span data-l10n-id="pdfjs-editor-free-text-button-label"></span>
+                    </button>
+                    <div class="editorParamsToolbar hidden doorHangerRight" id="editorFreeTextParamsToolbar">
+                      <div class="editorParamsToolbarContainer">
+                        <div class="editorParamsSetter">
+                          <label for="editorFreeTextColor" class="editorParamsLabel" data-l10n-id="pdfjs-editor-free-text-color-input"></label>
+                          <input type="color" id="editorFreeTextColor" class="editorParamsColor" tabindex="0" />
+                        </div>
+                        <div class="editorParamsSetter">
+                          <label for="editorFreeTextFontSize" class="editorParamsLabel" data-l10n-id="pdfjs-editor-free-text-size-input"></label>
+                          <input type="range" id="editorFreeTextFontSize" class="editorParamsSlider" value="10" min="5" max="100" step="1" tabindex="0" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="editorInk" class="toolbarButtonWithContainer">
+                    <button
+                      id="editorInkButton"
+                      class="toolbarButton"
+                      type="button"
+                      disabled="disabled"
+                      aria-expanded="false"
+                      aria-haspopup="true"
+                      aria-controls="editorInkParamsToolbar"
+                      tabindex="0"
+                      data-l10n-id="pdfjs-editor-ink-button"
+                    >
+                      <span data-l10n-id="pdfjs-editor-ink-button-label"></span>
+                    </button>
+                    <div class="editorParamsToolbar hidden doorHangerRight" id="editorInkParamsToolbar">
+                      <div class="editorParamsToolbarContainer">
+                        <div class="editorParamsSetter">
+                          <label for="editorInkColor" class="editorParamsLabel" data-l10n-id="pdfjs-editor-ink-color-input"></label>
+                          <input type="color" id="editorInkColor" class="editorParamsColor" tabindex="0" />
+                        </div>
+                        <div class="editorParamsSetter">
+                          <label for="editorInkThickness" class="editorParamsLabel" data-l10n-id="pdfjs-editor-ink-thickness-input"></label>
+                          <input type="range" id="editorInkThickness" class="editorParamsSlider" value="1" min="1" max="20" step="1" tabindex="0" />
+                        </div>
+                        <div class="editorParamsSetter">
+                          <label for="editorInkOpacity" class="editorParamsLabel" data-l10n-id="pdfjs-editor-ink-opacity-input"></label>
+                          <input type="range" id="editorInkOpacity" class="editorParamsSlider" value="1" min="0.05" max="1" step="0.05" tabindex="0" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="editorStamp" class="toolbarButtonWithContainer">
+                    <button
+                      id="editorStampButton"
+                      class="toolbarButton"
+                      type="button"
+                      disabled="disabled"
+                      aria-expanded="false"
+                      aria-haspopup="true"
+                      aria-controls="editorStampParamsToolbar"
+                      tabindex="0"
+                      data-l10n-id="pdfjs-editor-stamp-button"
+                    >
+                      <span data-l10n-id="pdfjs-editor-stamp-button-label"></span>
+                    </button>
+                    <div class="editorParamsToolbar hidden doorHangerRight menu" id="editorStampParamsToolbar">
+                      <div class="menuContainer">
+                        <button
+                          id="editorStampAddImage"
+                          class="toolbarButton labeled"
+                          type="button"
+                          tabindex="0"
+                          data-l10n-id="pdfjs-editor-stamp-add-image-button"
+                        >
+                          <span class="editorParamsLabel" data-l10n-id="pdfjs-editor-stamp-add-image-button-label"></span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="editorModeSeparator" class="verticalToolbarSeparator"></div>
+
+                <div class="toolbarHorizontalGroup hiddenMediumView">
+                  <button id="printButton" class="toolbarButton" type="button" tabindex="0" data-l10n-id="pdfjs-print-button">
+                    <span data-l10n-id="pdfjs-print-button-label"></span>
+                  </button>
+
+                  <button id="downloadButton" class="toolbarButton" type="button" tabindex="0" data-l10n-id="pdfjs-save-button">
+                    <span data-l10n-id="pdfjs-save-button-label"></span>
+                  </button>
+                </div>
+
+                <div class="verticalToolbarSeparator hiddenMediumView"></div>
+
+                <div id="secondaryToolbarToggle" class="toolbarButtonWithContainer">
+                  <button
+                    id="secondaryToolbarToggleButton"
+                    class="toolbarButton"
+                    type="button"
+                    tabindex="0"
+                    data-l10n-id="pdfjs-tools-button"
+                    aria-expanded="false"
+                    aria-haspopup="true"
+                    aria-controls="secondaryToolbar"
+                  >
+                    <span data-l10n-id="pdfjs-tools-button-label"></span>
+                  </button>
+                  <div id="secondaryToolbar" class="hidden doorHangerRight menu">
+                    <div id="secondaryToolbarButtonContainer" class="menuContainer">
+                      <button id="secondaryOpenFile" class="toolbarButton labeled" type="button" tabindex="0" data-l10n-id="pdfjs-open-file-button">
+                        <span data-l10n-id="pdfjs-open-file-button-label"></span>
+                      </button>
+
+                      <div class="visibleMediumView">
+                        <button id="secondaryPrint" class="toolbarButton labeled" type="button" tabindex="0" data-l10n-id="pdfjs-print-button">
+                          <span data-l10n-id="pdfjs-print-button-label"></span>
+                        </button>
+
+                        <button id="secondaryDownload" class="toolbarButton labeled" type="button" tabindex="0" data-l10n-id="pdfjs-save-button">
+                          <span data-l10n-id="pdfjs-save-button-label"></span>
+                        </button>
+
+                      </div>
+
+                      <div class="horizontalToolbarSeparator"></div>
+
+                      <button id="presentationMode" class="toolbarButton labeled" type="button" tabindex="0" data-l10n-id="pdfjs-presentation-mode-button">
+                        <span data-l10n-id="pdfjs-presentation-mode-button-label"></span>
+                      </button>
+
+                      <a href="#" id="viewBookmark" class="toolbarButton labeled" tabindex="0" data-l10n-id="pdfjs-bookmark-button">
+                        <span data-l10n-id="pdfjs-bookmark-button-label"></span>
+                      </a>
+
+                      <div id="viewBookmarkSeparator" class="horizontalToolbarSeparator"></div>
+
+                      <button id="firstPage" class="toolbarButton labeled" type="button" tabindex="0" data-l10n-id="pdfjs-first-page-button">
+                        <span data-l10n-id="pdfjs-first-page-button-label"></span>
+                      </button>
+                      <button id="lastPage" class="toolbarButton labeled" type="button" tabindex="0" data-l10n-id="pdfjs-last-page-button">
+                        <span data-l10n-id="pdfjs-last-page-button-label"></span>
+                      </button>
+
+                      <div class="horizontalToolbarSeparator"></div>
+
+                      <button id="pageRotateCw" class="toolbarButton labeled" type="button" tabindex="0" data-l10n-id="pdfjs-page-rotate-cw-button">
+                        <span data-l10n-id="pdfjs-page-rotate-cw-button-label"></span>
+                      </button>
+                      <button id="pageRotateCcw" class="toolbarButton labeled" type="button" tabindex="0" data-l10n-id="pdfjs-page-rotate-ccw-button">
+                        <span data-l10n-id="pdfjs-page-rotate-ccw-button-label"></span>
+                      </button>
+
+                      <div class="horizontalToolbarSeparator"></div>
+
+                      <div id="cursorToolButtons" role="radiogroup">
+                        <button
+                          id="cursorSelectTool"
+                          class="toolbarButton labeled toggled"
+                          type="button"
+                          tabindex="0"
+                          data-l10n-id="pdfjs-cursor-text-select-tool-button"
+                          role="radio"
+                          aria-checked="true"
+                        >
+                          <span data-l10n-id="pdfjs-cursor-text-select-tool-button-label"></span>
+                        </button>
+                        <button
+                          id="cursorHandTool"
+                          class="toolbarButton labeled"
+                          type="button"
+                          tabindex="0"
+                          data-l10n-id="pdfjs-cursor-hand-tool-button"
+                          role="radio"
+                          aria-checked="false"
+                        >
+                          <span data-l10n-id="pdfjs-cursor-hand-tool-button-label"></span>
+                        </button>
+                      </div>
+
+                      <div class="horizontalToolbarSeparator"></div>
+
+                      <div id="scrollModeButtons" role="radiogroup">
+                        <button
+                          id="scrollPage"
+                          class="toolbarButton labeled"
+                          type="button"
+                          tabindex="0"
+                          data-l10n-id="pdfjs-scroll-page-button"
+                          role="radio"
+                          aria-checked="false"
+                        >
+                          <span data-l10n-id="pdfjs-scroll-page-button-label"></span>
+                        </button>
+                        <button
+                          id="scrollVertical"
+                          class="toolbarButton labeled toggled"
+                          type="button"
+                          tabindex="0"
+                          data-l10n-id="pdfjs-scroll-vertical-button"
+                          role="radio"
+                          aria-checked="true"
+                        >
+                          <span data-l10n-id="pdfjs-scroll-vertical-button-label"></span>
+                        </button>
+                        <button
+                          id="scrollHorizontal"
+                          class="toolbarButton labeled"
+                          type="button"
+                          tabindex="0"
+                          data-l10n-id="pdfjs-scroll-horizontal-button"
+                          role="radio"
+                          aria-checked="false"
+                        >
+                          <span data-l10n-id="pdfjs-scroll-horizontal-button-label"></span>
+                        </button>
+                        <button
+                          id="scrollWrapped"
+                          class="toolbarButton labeled"
+                          type="button"
+                          tabindex="0"
+                          data-l10n-id="pdfjs-scroll-wrapped-button"
+                          role="radio"
+                          aria-checked="false"
+                        >
+                          <span data-l10n-id="pdfjs-scroll-wrapped-button-label"></span>
+                        </button>
+                      </div>
+
+                      <div class="horizontalToolbarSeparator"></div>
+
+                      <div id="spreadModeButtons" role="radiogroup">
+                        <button
+                          id="spreadNone"
+                          class="toolbarButton labeled toggled"
+                          type="button"
+                          tabindex="0"
+                          data-l10n-id="pdfjs-spread-none-button"
+                          role="radio"
+                          aria-checked="true"
+                        >
+                          <span data-l10n-id="pdfjs-spread-none-button-label"></span>
+                        </button>
+                        <button
+                          id="spreadOdd"
+                          class="toolbarButton labeled"
+                          type="button"
+                          tabindex="0"
+                          data-l10n-id="pdfjs-spread-odd-button"
+                          role="radio"
+                          aria-checked="false"
+                        >
+                          <span data-l10n-id="pdfjs-spread-odd-button-label"></span>
+                        </button>
+                        <button
+                          id="spreadEven"
+                          class="toolbarButton labeled"
+                          type="button"
+                          tabindex="0"
+                          data-l10n-id="pdfjs-spread-even-button"
+                          role="radio"
+                          aria-checked="false"
+                        >
+                          <span data-l10n-id="pdfjs-spread-even-button-label"></span>
+                        </button>
+                      </div>
+
+                      <div id="imageAltTextSettingsSeparator" class="horizontalToolbarSeparator hidden"></div>
+                      <button
+                        id="imageAltTextSettings"
+                        type="button"
+                        class="toolbarButton labeled hidden"
+                        tabindex="0"
+                        data-l10n-id="pdfjs-image-alt-text-settings-button"
+                        aria-controls="altTextSettingsDialog"
+                      >
+                        <span data-l10n-id="pdfjs-image-alt-text-settings-button-label"></span>
+                      </button>
+
+                      <div class="horizontalToolbarSeparator"></div>
+
+                      <button
+                        id="documentProperties"
+                        class="toolbarButton labeled"
+                        type="button"
+                        tabindex="0"
+                        data-l10n-id="pdfjs-document-properties-button"
+                        aria-controls="documentPropertiesDialog"
+                      >
+                        <span data-l10n-id="pdfjs-document-properties-button-label"></span>
+                      </button>
+                    </div>
+                  </div>
+                  <!-- secondaryToolbar -->
+                </div>
+              </div>
+            </div>
+            <div id="loadingBar">
+              <div class="progress">
+                <div class="glimmer"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="viewerContainer" tabindex="0">
+          <div id="viewer" class="pdfViewer"></div>
+        </div>
+      </div>
+      <!-- mainContainer -->
+
+      <div id="dialogContainer">
+        <dialog id="passwordDialog">
+          <div class="row">
+            <label for="password" id="passwordText" data-l10n-id="pdfjs-password-label"></label>
+          </div>
+          <div class="row">
+            <input type="password" id="password" class="toolbarField" />
+          </div>
+          <div class="buttonRow">
+            <button id="passwordCancel" class="dialogButton" type="button"><span data-l10n-id="pdfjs-password-cancel-button"></span></button>
+            <button id="passwordSubmit" class="dialogButton" type="button"><span data-l10n-id="pdfjs-password-ok-button"></span></button>
+          </div>
+        </dialog>
+        <dialog id="documentPropertiesDialog">
+          <div class="row"><span id="fileNameLabel" data-l10n-id="pdfjs-document-properties-file-name"></span><p id="fileNameField" aria-labelledby="fileNameLabel">-</p></div>
+          <div class="row"><span id="fileSizeLabel" data-l10n-id="pdfjs-document-properties-file-size"></span><p id="fileSizeField" aria-labelledby="fileSizeLabel">-</p></div>
+          <div class="separator"></div>
+          <div class="row"><span id="titleLabel" data-l10n-id="pdfjs-document-properties-title"></span><p id="titleField" aria-labelledby="titleLabel">-</p></div>
+          <div class="row"><span id="authorLabel" data-l10n-id="pdfjs-document-properties-author"></span><p id="authorField" aria-labelledby="authorLabel">-</p></div>
+          <div class="row"><span id="subjectLabel" data-l10n-id="pdfjs-document-properties-subject"></span><p id="subjectField" aria-labelledby="subjectLabel">-</p></div>
+          <div class="row"><span id="keywordsLabel" data-l10n-id="pdfjs-document-properties-keywords"></span><p id="keywordsField" aria-labelledby="keywordsLabel">-</p></div>
+          <div class="row"><span id="creationDateLabel" data-l10n-id="pdfjs-document-properties-creation-date"></span><p id="creationDateField" aria-labelledby="creationDateLabel">-</p></div>
+          <div class="row"><span id="modificationDateLabel" data-l10n-id="pdfjs-document-properties-modification-date"></span><p id="modificationDateField" aria-labelledby="modificationDateLabel">-</p></div>
+          <div class="row"><span id="creatorLabel" data-l10n-id="pdfjs-document-properties-creator"></span><p id="creatorField" aria-labelledby="creatorLabel">-</p></div>
+          <div class="separator"></div>
+          <div class="row"><span id="producerLabel" data-l10n-id="pdfjs-document-properties-producer"></span><p id="producerField" aria-labelledby="producerLabel">-</p></div>
+          <div class="row"><span id="versionLabel" data-l10n-id="pdfjs-document-properties-version"></span><p id="versionField" aria-labelledby="versionLabel">-</p></div>
+          <div class="row"><span id="pageCountLabel" data-l10n-id="pdfjs-document-properties-page-count"></span><p id="pageCountField" aria-labelledby="pageCountLabel">-</p></div>
+          <div class="row"><span id="pageSizeLabel" data-l10n-id="pdfjs-document-properties-page-size"></span><p id="pageSizeField" aria-labelledby="pageSizeLabel">-</p></div>
+          <div class="separator"></div>
+          <div class="row"><span id="linearizedLabel" data-l10n-id="pdfjs-document-properties-linearized"></span><p id="linearizedField" aria-labelledby="linearizedLabel">-</p></div>
+          <div class="buttonRow"><button id="documentPropertiesClose" class="dialogButton" type="button"><span data-l10n-id="pdfjs-document-properties-close-button"></span></button></div>
+        </dialog>
+        <dialog class="dialog altText" id="altTextDialog" aria-labelledby="dialogLabel" aria-describedby="dialogDescription">
+          <div id="altTextContainer" class="mainContainer">
+            <div id="overallDescription"><span id="dialogLabel" data-l10n-id="pdfjs-editor-alt-text-dialog-label" class="title"></span><span id="dialogDescription" data-l10n-id="pdfjs-editor-alt-text-dialog-description"></span></div>
+            <div id="addDescription"><div class="radio"><div class="radioButton"><input type="radio" id="descriptionButton" name="altTextOption" tabindex="0" aria-describedby="descriptionAreaLabel" checked /><label for="descriptionButton" data-l10n-id="pdfjs-editor-alt-text-add-description-label"></label></div><div class="radioLabel"><span id="descriptionAreaLabel" data-l10n-id="pdfjs-editor-alt-text-add-description-description"></span></div></div><div class="descriptionArea"><textarea id="descriptionTextarea" aria-labelledby="descriptionAreaLabel" data-l10n-id="pdfjs-editor-alt-text-textarea" tabindex="0"></textarea></div></div>
+            <div id="markAsDecorative"><div class="radio"><div class="radioButton"><input type="radio" id="decorativeButton" name="altTextOption" aria-describedby="decorativeLabel" /><label for="decorativeButton" data-l10n-id="pdfjs-editor-alt-text-mark-decorative-label"></label></div><div class="radioLabel"><span id="decorativeLabel" data-l10n-id="pdfjs-editor-alt-text-mark-decorative-description"></span></div></div></div>
+            <div id="buttons"><button id="altTextCancel" class="secondaryButton" type="button" tabindex="0"><span data-l10n-id="pdfjs-editor-alt-text-cancel-button"></span></button><button id="altTextSave" class="primaryButton" type="button" tabindex="0"><span data-l10n-id="pdfjs-editor-alt-text-save-button"></span></button></div>
+          </div>
+        </dialog>
+        <dialog class="dialog newAltText" id="newAltTextDialog" aria-labelledby="newAltTextTitle" aria-describedby="newAltTextDescription" tabindex="0">
+          <div id="newAltTextContainer" class="mainContainer">
+            <div class="title"><span id="newAltTextTitle" data-l10n-id="pdfjs-editor-new-alt-text-dialog-edit-label" role="sectionhead" tabindex="0"></span></div>
+            <div id="mainContent">
+              <div id="descriptionAndSettings">
+                <div id="descriptionInstruction">
+                  <div id="newAltTextDescriptionContainer"><div class="altTextSpinner" role="status" aria-live="polite"></div><textarea id="newAltTextDescriptionTextarea" aria-labelledby="descriptionAreaLabel" data-l10n-id="pdfjs-editor-new-alt-text-textarea" tabindex="0"></textarea></div>
+                  <span id="newAltTextDescription" role="note" data-l10n-id="pdfjs-editor-new-alt-text-description"></span>
+                  <div id="newAltTextDisclaimer" role="note"><div><span data-l10n-id="pdfjs-editor-new-alt-text-disclaimer1"></span><a href="https://support.mozilla.org/en-US/kb/pdf-alt-text" target="_blank" rel="noopener noreferrer" id="newAltTextLearnMore" data-l10n-id="pdfjs-editor-new-alt-text-disclaimer-learn-more-url" tabindex="0"></a></div></div>
+                </div>
+                <div id="newAltTextCreateAutomatically" class="toggler"><button id="newAltTextCreateAutomaticallyButton" class="toggle-button" type="button" aria-pressed="true" tabindex="0"></button><label for="newAltTextCreateAutomaticallyButton" class="togglerLabel" data-l10n-id="pdfjs-editor-new-alt-text-create-automatically-button-label"></label></div>
+                <div id="newAltTextDownloadModel" class="hidden"><span id="newAltTextDownloadModelDescription" data-l10n-id="pdfjs-editor-new-alt-text-ai-model-downloading-progress" aria-valuemin="0" data-l10n-args='{ "totalSize": 0, "downloadedSize": 0 }'></span></div>
+              </div>
+              <div id="newAltTextImagePreview"></div>
+            </div>
+            <div id="newAltTextError" class="messageBar"><div><div><span class="title" data-l10n-id="pdfjs-editor-new-alt-text-error-title"></span><span class="description" data-l10n-id="pdfjs-editor-new-alt-text-error-description"></span></div><button id="newAltTextCloseButton" class="closeButton" type="button" tabindex="0"><span data-l10n-id="pdfjs-editor-new-alt-text-error-close-button"></span></button></div></div>
+            <div id="newAltTextButtons" class="dialogButtonsGroup"><button id="newAltTextCancel" type="button" class="secondaryButton hidden" tabindex="0"><span data-l10n-id="pdfjs-editor-alt-text-cancel-button"></span></button><button id="newAltTextNotNow" type="button" class="secondaryButton" tabindex="0"><span data-l10n-id="pdfjs-editor-new-alt-text-not-now-button"></span></button><button id="newAltTextSave" type="button" class="primaryButton" tabindex="0"><span data-l10n-id="pdfjs-editor-alt-text-save-button"></span></button></div>
+          </div>
+        </dialog>
+        <dialog class="dialog" id="altTextSettingsDialog" aria-labelledby="altTextSettingsTitle">
+          <div id="altTextSettingsContainer" class="mainContainer">
+            <div class="title"><span id="altTextSettingsTitle" data-l10n-id="pdfjs-editor-alt-text-settings-dialog-label" role="sectionhead" tabindex="0" class="title"></span></div>
+            <div id="automaticAltText"><span data-l10n-id="pdfjs-editor-alt-text-settings-automatic-title"></span><div id="automaticSettings"><div id="createModelSetting"><div class="toggler"><button id="createModelButton" type="button" class="toggle-button" aria-pressed="true" tabindex="0"></button><label for="createModelButton" class="togglerLabel" data-l10n-id="pdfjs-editor-alt-text-settings-create-model-button-label"></label></div><div id="createModelDescription" class="description"><span data-l10n-id="pdfjs-editor-alt-text-settings-create-model-description"></span><a href="https://support.mozilla.org/en-US/kb/pdf-alt-text" target="_blank" rel="noopener noreferrer" id="altTextSettingsLearnMore" data-l10n-id="pdfjs-editor-new-alt-text-disclaimer-learn-more-url" tabindex="0"></a></div></div><div id="aiModelSettings"><div><span data-l10n-id="pdfjs-editor-alt-text-settings-download-model-label" data-l10n-args='{ "totalSize": 180 }'></span><div id="aiModelDescription" class="description"><span data-l10n-id="pdfjs-editor-alt-text-settings-ai-model-description"></span></div></div><button id="deleteModelButton" type="button" class="secondaryButton" tabindex="0"><span data-l10n-id="pdfjs-editor-alt-text-settings-delete-model-button"></span></button><button id="downloadModelButton" type="button" class="secondaryButton" tabindex="0"><span data-l10n-id="pdfjs-editor-alt-text-settings-download-model-button"></span></button></div></div></div>
+            <div class="dialogSeparator"></div>
+            <div id="altTextEditor"><span data-l10n-id="pdfjs-editor-alt-text-settings-editor-title"></span><div id="showAltTextEditor"><div class="toggler"><button id="showAltTextDialogButton" type="button" class="toggle-button" aria-pressed="true" tabindex="0"></button><label for="showAltTextDialogButton" class="togglerLabel" data-l10n-id="pdfjs-editor-alt-text-settings-show-dialog-button-label"></label></div><div id="showAltTextDialogDescription" class="description"><span data-l10n-id="pdfjs-editor-alt-text-settings-show-dialog-description"></span></div></div></div>
+            <div id="buttons" class="dialogButtonsGroup"><button id="altTextSettingsCloseButton" type="button" class="primaryButton" tabindex="0"><span data-l10n-id="pdfjs-editor-alt-text-settings-close-button"></span></button></div>
+          </div>
+        </dialog>
+        <dialog class="dialog signatureDialog" id="addSignatureDialog" aria-labelledby="addSignatureDialogLabel">
+          <span id="addSignatureDialogLabel" data-l10n-id="pdfjs-editor-add-signature-dialog-label"></span>
+          <div id="addSignatureContainer" class="mainContainer">
+            <div class="title"><span role="sectionhead" data-l10n-id="pdfjs-editor-add-signature-dialog-title" tabindex="0"></span></div>
+            <div role="tablist" id="addSignatureOptions">
+              <button id="addSignatureTypeButton" type="button" role="tab" aria-selected="true" aria-controls="addSignatureTypeContainer" data-l10n-id="pdfjs-editor-add-signature-type-button" tabindex="0"></button>
+              <button id="addSignatureDrawButton" type="button" role="tab" aria-selected="false" aria-controls="addSignatureDrawContainer" data-l10n-id="pdfjs-editor-add-signature-draw-button" tabindex="0"></button>
+              <button id="addSignatureImageButton" type="button" role="tab" aria-selected="false" aria-controls="addSignatureImageContainer" data-l10n-id="pdfjs-editor-add-signature-image-button" tabindex="-1"></button>
+            </div>
+            <div id="addSignatureActionContainer" data-selected="type">
+              <div id="addSignatureTypeContainer" role="tabpanel" aria-labelledby="addSignatureTypeContainer"><input id="addSignatureTypeInput" type="text" data-l10n-id="pdfjs-editor-add-signature-type-input" tabindex="0" /></div>
+              <div id="addSignatureDrawContainer" role="tabpanel" aria-labelledby="addSignatureDrawButton" tabindex="-1"><svg id="addSignatureDraw" xmlns="http://www.w3.org/2000/svg" aria-labelledby="addSignatureDrawPlaceholder"></svg><span id="addSignatureDrawPlaceholder" data-l10n-id="pdfjs-editor-add-signature-draw-placeholder"></span><div id="thickness"><div><label for="addSignatureDrawThickness" data-l10n-id="pdfjs-editor-add-signature-draw-thickness-range-label"></label><input type="range" id="addSignatureDrawThickness" min="1" max="5" step="1" value="1" data-l10n-id="pdfjs-editor-add-signature-draw-thickness-range" data-l10n-args='{ "thickness": 1 }' tabindex="0" /></div></div></div>
+              <div id="addSignatureImageContainer" role="tabpanel" aria-labelledby="addSignatureImageButton" tabindex="-1"><svg id="addSignatureImage" xmlns="http://www.w3.org/2000/svg" aria-labelledby="addSignatureImagePlaceholder"></svg><div id="addSignatureImagePlaceholder"><span data-l10n-id="pdfjs-editor-add-signature-image-placeholder"></span><label id="addSignatureImageBrowse" for="addSignatureFilePicker" tabindex="0"><a data-l10n-id="pdfjs-editor-add-signature-image-browse-link"></a></label><input id="addSignatureFilePicker" type="file" /></div></div>
+              <div id="addSignatureControls">
+                <div id="horizontalContainer"><div id="addSignatureDescriptionContainer"><label for="addSignatureDescInput" data-l10n-id="pdfjs-editor-add-signature-description-label"></label><span id="addSignatureDescription" class="inputWithClearButton"><input id="addSignatureDescInput" type="text" data-l10n-id="pdfjs-editor-add-signature-description-input" tabindex="0" /><button class="clearInputButton" type="button" tabindex="0" aria-hidden="true"></button></span></div><button id="clearSignatureButton" type="button" data-l10n-id="pdfjs-editor-add-signature-clear-button" tabindex="0"><span data-l10n-id="pdfjs-editor-add-signature-clear-button-label"></span></button></div>
+                <div id="addSignatureSaveContainer"><input type="checkbox" id="addSignatureSaveCheckbox" /><label for="addSignatureSaveCheckbox" data-l10n-id="pdfjs-editor-add-signature-save-checkbox"></label><span></span><span id="addSignatureSaveWarning" data-l10n-id="pdfjs-editor-add-signature-save-warning-message"></span></div>
+              </div>
+              <div id="addSignatureError" hidden="true" class="messageBar"><div><div><span id="addSignatureErrorTitle" class="title" data-l10n-id="pdfjs-editor-add-signature-image-upload-error-title"></span><span id="addSignatureErrorDescription" class="description" data-l10n-id="pdfjs-editor-add-signature-image-upload-error-description"></span></div><button id="addSignatureErrorCloseButton" class="closeButton" type="button" tabindex="0"><span data-l10n-id="pdfjs-editor-add-signature-error-close-button"></span></button></div></div>
+              <div class="dialogButtonsGroup"><button id="addSignatureCancelButton" type="button" class="secondaryButton" tabindex="0"><span data-l10n-id="pdfjs-editor-add-signature-cancel-button"></span></button><button id="addSignatureAddButton" type="button" class="primaryButton" disabled tabindex="0"><span data-l10n-id="pdfjs-editor-add-signature-add-button"></span></button></div>
+            </div>
+          </div>
+        </dialog>
+        <dialog class="dialog signatureDialog" id="editSignatureDescriptionDialog" aria-labelledby="editSignatureDescriptionTitle">
+          <div id="editSignatureDescriptionContainer" class="mainContainer">
+            <div class="title"><span id="editSignatureDescriptionTitle" role="sectionhead" data-l10n-id="pdfjs-editor-edit-signature-dialog-title" tabindex="0"></span></div>
+            <div id="editSignatureDescriptionAndView"><div id="editSignatureDescriptionContainer"><label for="editSignatureDescInput" data-l10n-id="pdfjs-editor-add-signature-description-label"></label><span id="editSignatureDescription" class="inputWithClearButton"><input id="editSignatureDescInput" type="text" data-l10n-id="pdfjs-editor-add-signature-description-input" tabindex="0" /><button class="clearInputButton" type="button" tabindex="0" aria-hidden="true"></button></span></div><svg id="editSignatureView" xmlns="http://www.w3.org/2000/svg"></svg></div>
+            <div class="dialogButtonsGroup"><button id="editSignatureCancelButton" type="button" class="secondaryButton" tabindex="0"><span data-l10n-id="pdfjs-editor-add-signature-cancel-button"></span></button><button id="editSignatureUpdateButton" type="button" class="primaryButton" disabled tabindex="0"><span data-l10n-id="pdfjs-editor-edit-signature-update-button"></span></button></div>
+          </div>
+        </dialog>
+        <dialog class="dialog commentManager" id="commentManagerDialog" aria-labelledby="commentManagerTitle">
+          <div class="mainContainer">
+            <div class="title" id="commentManagerToolbar"><span id="commentManagerTitle" role="sectionhead" data-l10n-id="pdfjs-editor-edit-comment-dialog-title-when-adding"></span></div>
+            <textarea id="commentManagerTextInput" data-l10n-id="pdfjs-editor-edit-comment-dialog-text-input" tabindex="0"></textarea>
+            <div class="dialogButtonsGroup"><button id="commentManagerCancelButton" type="button" class="secondaryButton" tabindex="0"><span data-l10n-id="pdfjs-editor-edit-comment-dialog-cancel-button"></span></button><button id="commentManagerSaveButton" type="button" class="primaryButton" disabled tabindex="0"><span data-l10n-id="pdfjs-editor-edit-comment-dialog-save-button-when-adding"></span></button></div>
+          </div>
+        </dialog>
+        <dialog id="printServiceDialog" style="min-width: 200px">
+          <div class="row"><span data-l10n-id="pdfjs-print-progress-message"></span></div>
+          <div class="row"><progress value="0" max="100"></progress><span data-l10n-id="pdfjs-print-progress-percent" data-l10n-args='{ "progress": 0 }' class="relative-progress">0%</span></div>
+          <div class="buttonRow"><button id="printCancel" class="dialogButton" type="button"><span data-l10n-id="pdfjs-print-progress-close-button"></span></button></div>
+        </dialog>
+      </div>
+      <!-- dialogContainer -->
+
+      <div id="editorUndoBar" class="messageBar" role="status" aria-labelledby="editorUndoBarMessage" tabindex="-1" hidden>
+        <div>
+          <div><span id="editorUndoBarMessage" class="description"></span></div>
+          <button id="editorUndoBarUndoButton" class="undoButton" type="button" tabindex="0" data-l10n-id="pdfjs-editor-undo-bar-undo-button"><span data-l10n-id="pdfjs-editor-undo-bar-undo-button-label"></span></button>
+          <button id="editorUndoBarCloseButton" class="closeButton" type="button" tabindex="0" data-l10n-id="pdfjs-editor-undo-bar-close-button"><span data-l10n-id="pdfjs-editor-undo-bar-close-button-label"></span></button>
+        </div>
+      </div>
+      <!-- editorUndoBar -->
+    </div>
+    <!-- outerContainer -->
+    
+    <div id="printContainer"></div>
+
+    <!-- =========================================================
+         DTL CHAPTER VIEWER - SECURE TOKEN-BASED ACCESS
+         ========================================================= -->
+    <script>
+    (function() {
+        'use strict';
+        
+        // =============================================================
+        // FRIENDLY ERROR PAGE
+        // =============================================================
+        function showErrorPage(icon, title, message) {
+            document.documentElement.innerHTML = '\
+                <head>\
+                    <title>' + title + ' | Digital Theological Library</title>\
+                    <meta name="viewport" content="width=device-width, initial-scale=1">\
+                    <style>\
+                        * { box-sizing: border-box; margin: 0; padding: 0; }\
+                        body { display: flex; align-items: center; justify-content: center; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; background: linear-gradient(135deg, #f5f7fa 0%, #e4e8ec 100%); padding: 20px; }\
+                        .card { background: white; padding: 48px 40px; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.1); text-align: center; max-width: 420px; width: 100%; }\
+                        .icon { font-size: 56px; margin-bottom: 20px; }\
+                        h1 { margin: 0 0 12px 0; color: #1f2937; font-size: 24px; font-weight: 700; }\
+                        .message { color: #6b7280; margin: 0 0 28px 0; line-height: 1.6; }\
+                        .links { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }\
+                        .btn { display: block; padding: 14px 24px; color: white; text-decoration: none; border-radius: 8px; font-weight: 800; text-align: center; }\
+                        .btn-primary { background: #AF161C; }\
+                        .btn-secondary { background: #154889; }\
+                        .help { font-size: 13px; color: #9ca3af; }\
+                    </style>\
+                </head>\
+                <body>\
+                    <div class="card">\
+                        <div class="icon">' + icon + '</div>\
+                        <h1>' + title + '</h1>\
+                        <p class="message">' + message + '</p>\
+                        <div class="links">\
+                            <a href="https://dtl.primo.exlibrisgroup.com/nde/home?vid=01DTL_INST:DTL1&lang=en" class="btn btn-primary">📖 DTL Catalog</a>\
+                        </div>\
+                        <p class="help">Need help? Contact your librarian for assistance.</p>\
+                    </div>\
+                </body>';
+            window.stop();
+        }
+
+        // =============================================================
+        // TOKEN HELPERS
+        // =============================================================
+        function decodeToken(token) {
+            if (!token) return null;
+            try {
+                var parts = token.split('.');
+                if (parts.length < 2) return null;
+                var base64 = parts[0].replace(/-/g, '+').replace(/_/g, '/');
+                while (base64.length % 4) base64 += '=';
+                var bytes = new Uint8Array(atob(base64).split('').map(function(c) { return c.charCodeAt(0); }));
+                return JSON.parse(new TextDecoder().decode(bytes));
+            } catch (e) { return null; }
+        }
+
+        function extractTokenFromFile(fileParam) {
+            if (!fileParam) return null;
+            try {
+                var decoded = decodeURIComponent(fileParam);
+                return new URL(decoded, location.href).searchParams.get("token");
+            } catch (e) {
+                try { return new URL(fileParam, location.href).searchParams.get("token"); } 
+                catch (e2) { return null; }
+            }
+        }
+
+        // =============================================================
+        // CONFIGURATION
+        // =============================================================
+        var ALLOWED_HOSTS = ["thedtl.org", "thedtl.github.io", "oclc.org", "libapps.com", "libguides.com", "springshare.com", "localhost", "127.0.0.1"];
+        var isLocalDev = ['localhost', '127.0.0.1'].indexOf(location.hostname) !== -1;
+
+        // =============================================================
+        // PARSE TOKEN FROM URL
+        // Parse before access checks so access validation and diagnostics
+        // can rely on the same token state.
+        // =============================================================
+        var urlParams = new URLSearchParams(window.location.search);
+        var token = urlParams.get('token');
+        var fileParam = urlParams.get('file');
+        if (!token && fileParam) token = extractTokenFromFile(fileParam);
+
+        var payload = token ? decodeToken(token) : null;
+
+        // =============================================================
+        // SECURITY CHECK: REFERRER, TOKEN & NEW TAB/WINDOW DETECTION
+        // =============================================================
+        var referrer = document.referrer || "";
+        if (!referrer && window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0) {
+            referrer = window.location.ancestorOrigins[window.location.ancestorOrigins.length - 1];
+        }
+
+        // Diagnostic only. Do not use history.length as a blocking signal.
+        // Firefox can report history.length === 2 for a normal same-tab click,
+        // so using <= 2 creates false "New Tab/Window Not Allowed" blocks.
+        try {
+            console.log('[DTL] Access check:', {
+                browser: navigator.userAgent,
+                referrer: referrer,
+                ancestorOrigins: window.location.ancestorOrigins ? Array.from(window.location.ancestorOrigins) : [],
+                historyLength: window.history.length,
+                hasToken: !!token,
+                tokenDecoded: !!payload,
+                location: window.location.href
+            });
+        } catch (e) {}
+
+        // Direct access/new-tab loads often have no referrer. This is a much
+        // stronger signal than history.length and avoids the Firefox false positive.
+        if (!referrer && !isLocalDev) {
+            showErrorPage('🚫', 'New Tab/Window Not Allowed', 'For copyright protection, this resource cannot be opened directly. Please click the link from the chapter list.');
+            throw new Error("Access Denied: No Referrer");
+        }
+
+        // Check if referrer is from an allowed source.
+        var isAllowedReferrer = isLocalDev || ALLOWED_HOSTS.some(function(host) {
+            try {
+                var refHost = new URL(referrer).hostname;
+                return refHost === host || refHost.endsWith('.' + host);
+            } catch (e) {
+                return false;
+            }
+        });
+
+        if (!isAllowedReferrer) {
+            showErrorPage('🔗', 'Invalid Link Source', 'This resource must be accessed through the library website.');
+            throw new Error("Access Denied: Invalid Referrer");
+        }
+
+        // Token-based access should fail closed. This prevents a copied URL
+        // without a valid token from becoming an unrestricted full-document viewer.
+        if ((!token || !payload) && !isLocalDev) {
+            showErrorPage('🔐', 'Invalid Access Token', 'This secure viewing link is missing or invalid. Please return to the chapter list and open the resource again.');
+            throw new Error("Access Denied: Missing or invalid token");
+        }
+
+        window.DTL_prepareReaderFileUrl = async function(fileUrl) {
+            if (!token) {
+                return fileUrl;
+            }
+
+            var pdfUrl;
+            try {
+                pdfUrl = new URL(fileUrl, location.href);
+            } catch (e) {
+                return fileUrl;
+            }
+
+            if (!pdfUrl.searchParams.get('token')) {
+                return fileUrl;
+            }
+
+            try {
+                if (window.DTL_waitForReadingGesture) {
+                    await window.DTL_waitForReadingGesture();
+                }
+                if (window.DTL_showPreparingChapter) {
+                    window.DTL_showPreparingChapter();
+                }
+
+                var sessionUrl = new URL('/reader-session', pdfUrl.origin);
+                sessionUrl.searchParams.set('token', token);
+
+                var response = await fetch(sessionUrl.toString(), {
+                    method: 'GET',
+                    cache: 'no-store',
+                    credentials: 'omit'
+                });
+                var data = await response.json().catch(function() { return {}; });
+                if (!response.ok || !data.session) {
+                    throw new Error(data.error || 'The reading session could not be started.');
+                }
+
+                pdfUrl.searchParams.set('session', data.session);
+                if (window.DTL_armPreparingFinish) {
+                    window.DTL_armPreparingFinish();
+                }
+                return pdfUrl.toString();
+            } catch (e) {
+                if (window.DTL_finishPreparingChapter) {
+                    await window.DTL_finishPreparingChapter().catch(function() {});
+                }
+                showErrorPage('🔐', 'Reader Session Needed', e.message || 'Please return to the chapter list and open this chapter again.');
+                throw e;
+            }
+        };
+        
+        // Store config globally
+        window.DTL_CHAPTER = {
+            chapterStart: payload && payload.s ? payload.s : null,
+            chapterEnd: payload && payload.e ? payload.e : null,
+            chapterName: payload && payload.c ? payload.c : null,
+            allowDownload: payload && payload.d === 1,
+            totalPages: null,
+            isRestricted: payload && payload.s != null && payload.e != null
+        };
+
+        console.log('[DTL] Chapter config:', window.DTL_CHAPTER);
+
+        // =============================================================
+        // HIDE EDITOR TOOLS (Always)
+        // =============================================================
+        var hideEditorTools = function() {
+            ['#editorModeButtons', '#editorModeSeparator', '#editorHighlight', '#editorFreeText', '#editorInk', '#editorStamp', '#editorComment', '#editorSignature'].forEach(function(sel) {
+                var el = document.querySelector(sel);
+                if (el) el.style.display = 'none';
+            });
+        };
+        hideEditorTools();
+        setTimeout(hideEditorTools, 500);
+        setTimeout(hideEditorTools, 1500);
+
+        // =============================================================
+        // DOWNLOAD/PRINT RESTRICTIONS
+        // =============================================================
+        var applyDownloadRestrictions = function() {
+            var show = window.DTL_CHAPTER.allowDownload;
+            ['#downloadButton', '#printButton', '#secondaryDownload', '#secondaryPrint', '#secondaryOpenFile'].forEach(function(sel) {
+                var el = document.querySelector(sel);
+                if (el) el.style.display = show ? '' : 'none';
+            });
+        };
+        applyDownloadRestrictions();
+        setTimeout(applyDownloadRestrictions, 500);
+        setTimeout(applyDownloadRestrictions, 1500);
+        
+        // Block keyboard shortcuts if downloads not allowed
+        if (!window.DTL_CHAPTER.allowDownload) {
+            document.addEventListener('keydown', function(e) {
+                if ((e.ctrlKey || e.metaKey) && ['s', 'p', 'o', 'u'].indexOf(e.key.toLowerCase()) !== -1) {
+                    e.preventDefault(); e.stopPropagation(); return false;
+                }
+            }, true);
+        }
+        
+        // Always block right-click (prevents "Open in new tab" option)
+        document.addEventListener('contextmenu', function(e) { e.preventDefault(); }, true);
+
+        // =============================================================
+        // BLOCK OPENING LINKS IN NEW TAB
+        // =============================================================
+        function getClickedLink(target) {
+            if (!target || typeof target.closest !== 'function') return null;
+            return target.closest('a[href], area[href]');
+        }
+
+        // Block middle-click on links, which opens links in a new tab.
+        document.addEventListener('auxclick', function(e) {
+            if (e.button === 1 && getClickedLink(e.target)) {
+                e.preventDefault();
+                e.stopPropagation();
+                return false;
+            }
+        }, true);
+
+        // Block Ctrl+click, Cmd+click, Shift+click, and Alt+click on links.
+        document.addEventListener('click', function(e) {
+            if (getClickedLink(e.target) && (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey)) {
+                e.preventDefault();
+                e.stopPropagation();
+                return false;
+            }
+        }, true);
+
+        // Disable dragging links to a new tab without blocking all non-link dragging.
+        document.addEventListener('dragstart', function(e) {
+            if (getClickedLink(e.target)) {
+                e.preventDefault();
+                e.stopPropagation();
+                return false;
+            }
+        }, true);
+
+        // =============================================================
+        // END OF CHAPTER CARD
+        // =============================================================
+        var endCardShowing = false;
+        
+        function showEndCard(reason) {
+            if (endCardShowing || document.getElementById('dtl-chapter-end-card')) return;
+            endCardShowing = true;
+            
+            var c = window.DTL_CHAPTER;
+            var isStart = reason === 'start';
+            var title = isStart ? 'Start of Chapter' : 'End of Chapter';
+            var message = isStart 
+                ? 'You are at the beginning of your selected chapter.'
+                : (c.chapterName ? 'You\'ve reached the end of "' + c.chapterName + '".' : 'You\'ve reached the end of this chapter.');
+            
+            var card = document.createElement('div');
+            card.id = 'dtl-chapter-end-card';
+            card.innerHTML = '<div style="position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;justify-content:center;align-items:center;z-index:99999;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;padding:20px;"><div style="background:white;padding:40px;border-radius:16px;text-align:center;max-width:480px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.3);"><div style="font-size:48px;margin-bottom:16px;">📖</div><h2 style="margin:0 0 12px 0;color:#1f2937;font-size:24px;">' + title + '</h2><p style="color:#6b7280;margin:0 0 24px 0;line-height:1.6;">' + message + '</p><button id="dtl-end-card-close" style="padding:14px 18px;background:#154889;color:white;border:none;border-radius:10px;font-size:15px;font-weight:800;cursor:pointer;margin-bottom:20px;width:100%;">Return to Chapter</button><div style="border-top:1px solid #eee;padding-top:20px;"><p style="color:#9ca3af;font-size:13px;margin-bottom:12px;">Looking for more? Browse our catalog:</p><div style="display:flex;flex-direction:column;gap:12px;"><a href="https://dtl.primo.exlibrisgroup.com/nde/home?vid=01DTL_INST:DTL1&lang=en" target="_blank" style="display:block;padding:14px 18px;border-radius:10px;background:#AF161C;color:white;text-decoration:none;font-weight:800;">📖 DTL Catalog</a></div></div></div></div>';
+            document.body.appendChild(card);
+            document.getElementById('dtl-end-card-close').onclick = function() { card.remove(); endCardShowing = false; };
+        }
+
+        // =============================================================
+        // MAIN: APPLY CHAPTER RESTRICTIONS AFTER PDF LOADS
+        // =============================================================
+        function enforceChapterRestrictions() {
+            var checkReady = setInterval(function() {
+                if (window.PDFViewerApplication && window.PDFViewerApplication.pdfDocument) {
+                    clearInterval(checkReady);
+                    
+                    var app = window.PDFViewerApplication;
+                    var pdfDoc = app.pdfDocument;
+                    var totalPages = pdfDoc.numPages;
+                    window.DTL_CHAPTER.totalPages = totalPages;
+
+                    // Neuter easy extraction methods
+                    try {
+                        pdfDoc.getData = function() { return Promise.reject(new Error('Access denied')); };
+                        pdfDoc.saveDocument = function() { return Promise.reject(new Error('Access denied')); };
+                    } catch (e) {}
+
+                    // Only apply restrictions if we have chapter bounds
+                    if (!window.DTL_CHAPTER.isRestricted) {
+                        console.log('[DTL] No chapter restrictions - full PDF access');
+                        return;
+                    }
+
+                    var c = window.DTL_CHAPTER;
+                    var validStart = Math.max(1, Math.min(c.chapterStart, totalPages));
+                    var validEnd = Math.max(validStart, Math.min(c.chapterEnd, totalPages));
+                    c.chapterStart = validStart;
+                    c.chapterEnd = validEnd;
+                    var chapterLength = validEnd - validStart + 1;
+
+                    // Jump to chapter start
+                    app.page = validStart;
+
+                    // Page display helpers
+                    var pageInput = document.getElementById('pageNumber');
+                    var numPagesEl = document.getElementById('numPages');
+                    var isUserEditing = false;
+
+                    if (pageInput) {
+                        pageInput.addEventListener('focus', function() { isUserEditing = true; });
+                        pageInput.addEventListener('blur', function() { isUserEditing = false; });
+                    }
+
+                    var updatePageDisplay = function(currentPage) {
+                        if (isUserEditing) return;
+                        var relPage = currentPage - validStart + 1;
+                        if (pageInput) { pageInput.value = relPage; pageInput.max = chapterLength; pageInput.min = 1; }
+                        if (numPagesEl) numPagesEl.textContent = 'of ' + chapterLength;
+                    };
+                    updatePageDisplay(validStart);
+
+                    // Navigation guard
+                    // On first load, pdf.js may override our app.page call
+                    // (e.g. restoring last viewed page). So we silently redirect
+                    // the first time without showing any card. Cards only appear
+                    // for subsequent (user-initiated) out-of-range navigation.
+                    var initialNav = true;
+                    
+                    app.eventBus.on('pagechanging', function(evt) {
+                        var page = evt.pageNumber;
+                        
+                        if (page >= validStart && page <= validEnd) {
+                            // Page is in range — everything is fine
+                            initialNav = false;
+                            updatePageDisplay(page);
+                            return;
+                        }
+                        
+                        if (initialNav) {
+                            // First navigation is outside range — pdf.js overrode us.
+                            // Silently redirect to chapter start, no card.
+                            initialNav = false;
+                            console.log('[DTL] Initial page ' + page + ' outside chapter range — silently redirecting to ' + validStart);
+                            setTimeout(function() { app.page = validStart; updatePageDisplay(validStart); }, 50);
+                            return;
+                        }
+                        
+                        // User-initiated navigation outside range — show card
+                        if (page < validStart) {
+                            setTimeout(function() { app.page = validStart; updatePageDisplay(validStart); }, 0);
+                            showEndCard('start');
+                        } else if (page > validEnd) {
+                            setTimeout(function() { app.page = validEnd; updatePageDisplay(validEnd); }, 0);
+                            showEndCard('end');
+                        }
+                    });
+
+                    // Handle manual page input
+                    if (pageInput) {
+                        pageInput.addEventListener('change', function(e) {
+                            e.stopPropagation();
+                            var relPage = parseInt(this.value, 10);
+                            if (isNaN(relPage) || relPage < 1) {
+                                app.page = validStart;
+                            } else if (relPage > chapterLength) {
+                                app.page = validEnd;
+                                showEndCard('end');
+                            } else {
+                                app.page = validStart + relPage - 1;
+                            }
+                        }, true);
+                    }
+
+                    console.log('[DTL] Chapter restricted: pages ' + validStart + '-' + validEnd + ' (' + chapterLength + ' pages)');
+                }
+            }, 100);
+            
+        }
+
+        enforceChapterRestrictions();
+    })();
+    </script>
+  </body>
+</html>

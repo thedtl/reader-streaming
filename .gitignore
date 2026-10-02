@@ -1,0 +1,10 @@
+.env
+.env.*
+worker/.dev.vars
+worker/.dev.vars.*
+node_modules/
+worker/.wrangler/
+worker/dist/
+*.log
+__pycache__/
+*.pyc

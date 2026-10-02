@@ -1,0 +1,11 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-t', '${_IMAGE}', 'slicer']
+  - name: gcr.io/cloud-builders/docker
+    args: ['run', '--rm', '--network=none', '-v', '/workspace:/workspace:ro', '-w', '/workspace', '-e', 'PYTHONPATH=/app:/workspace', '--entrypoint=python', '${_IMAGE}', '-B', '-m', 'unittest', 'discover', '-s', 'slicer/tests', '-v']
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', '${_IMAGE}']
+images: ['${_IMAGE}']
+timeout: 1200s
+options:
+  logging: CLOUD_LOGGING_ONLY

@@ -1,0 +1,7 @@
+**
+!slicer/
+!slicer/**
+slicer/**/__pycache__/**
+slicer/**/*.pyc
+slicer/**/*.pdf
+slicer/.env*

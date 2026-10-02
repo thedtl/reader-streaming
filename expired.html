@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Link Expired | DTL</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f3f4f6; margin: 0; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 48px 20px; }
+    .card { background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+    h1 { margin: 0 0 10px; font-size: 22px; }
+    p { margin: 0 0 16px; color: #374151; line-height: 1.5; }
+    .links { display: grid; gap: 10px; margin-top: 14px; }
+    a.btn { display: inline-block; padding: 12px 14px; border-radius: 10px; text-decoration: none; font-weight: 600; }
+    a.primary { background: #0061fe; color: #fff; }
+    a.secondary { background: #111827; color: #fff; }
+    .hint { font-size: 13px; color: #6b7280; margin-top: 14px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Sorry, this page has expired.</h1>
+      <p>To access another chapter, please go back to the catalog and search for the book again.</p>
+
+      <div class="links">
+        <a class="btn primary" href="https://dtl.primo.exlibrisgroup.com/nde/home?vid=01DTL_INST:DTL1&lang=en">DTL Catalog Search</a>
+      </div>
+
+      <p class="hint">If you arrived here by pressing your browser Back button, this is expected behavior.</p>
+    </div>
+  </div>
+
+  <script>
+    // Optional: keep Back from returning to the chapter list after landing here.
+    // This uses the same History API technique (pushState + popstate). :contentReference[oaicite:1]{index=1}
+    history.pushState({ dtlExpired: true }, "", location.href);
+    window.addEventListener("popstate", function () {
+      history.pushState({ dtlExpired: true }, "", location.href);
+    });
+  </script>
+</body>
+</html>
