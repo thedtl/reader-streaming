@@ -24,3 +24,33 @@ literals were changed in `web/viewer.mjs`, without rebuilding PDF.js.
 
 See `worker/README.md` and `slicer/README.md` for configuration and local checks.
 Do not deploy this copy over the existing lab services.
+
+## Release check — 2026-10-02
+
+The published generator, reader, Worker and Cloud Run slicer are separate copies.
+The existing reader/generator repository heads, original Worker deployment and
+original slicer specification/traffic were verified unchanged. Stable ToC still
+routes 100% to `toc-service-staff-pass-v5`.
+
+A cloud-only test used the supplied 329,788,466-byte Psychopathology PDF:
+- One-page control: 166,019 bytes, valid PDF, 15.27 seconds.
+- Saved Chapter 16 start at PDF 602 plus the prior link's 231-page span: PDF
+  602–832, 92,050,306 bytes, valid 231-page PDF, 38.45 seconds.
+- Both responses omit Content-Length and contain only their signed page ranges.
+  Missing sessions and invalid tokens were rejected. This verifies transport,
+  not the scholarly correctness of the selected chapter's end or browser latency.
+
+All 26 Worker checks and seven slicer checks pass; the generator retains its
+seven range checks. The initial integration test wrongly required Dropbox's
+source response to say application/pdf; it returned valid PDF bytes as
+application/octet-stream. Only the test was corrected; the second run passed.
+The reusable cloud-only check is `slicer/integration/check_reader.py`.
+
+PDFs exist only in temporary cloud files and are removed afterward. Build source
+uses the experimental bucket's `builds/streaming-reader/` prefix. There is no new
+persistent PDF store; no stable storage or old PDF/link is modified. The new
+slicer uses request-based billing and zero minimum instances.
+
+Wrangler is pinned for reproducible deployment. Its installed development-only
+dependency tree reported four high-severity audit findings; no affected local
+development server was exposed, and these packages are not Worker runtime code.
