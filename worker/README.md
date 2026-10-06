@@ -75,6 +75,15 @@ token payload. The public token range is rewritten to `1..chapter length` so the
 reader works against the temporary chapter-only PDF, not the source PDF's page
 numbers.
 
+## Citation metadata
+
+The existing scan distinguishes an original collected-work author, volume
+editors, and general/series editors. Preserve the volume-specific title, number
+and title date span; role formatting must not promote an editor over an author.
+Only explicit page locators such as `(Page 4)` are stripped, not title years.
+These changes add no pages or model calls. Mocked regression tests check prompt
+delivery and citation assembly, not fresh model-reading accuracy.
+
 ## Local check
 
 ```sh

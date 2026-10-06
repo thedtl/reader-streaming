@@ -583,8 +583,47 @@ test("Worker forwards rendered front and imprint images to Gemini", async () => 
   assert.equal(parts.filter(part => part.inlineData).length, 18);
   assert(parts.some(part => part.text === "Rendered PDF page 332"));
   assert.match(prompt, /Do not split a single stacked title block into title plus series/);
-  assert.match(prompt, /For editor labels such as General Editor, cite the role as ed\. or eds\./);
+  assert.match(prompt, /For an editor who belongs in this volume's citation, format role labels such as General Editor as ed\. or eds\./);
   assert.match(prompt, /Do not treat names introduced only by with the collaboration of/);
   assert.match(prompt, /박성덕 \[Park Sung-deok\]/);
   assert.match(prompt, /Do not use a translated title, filename, URL slug, MMS ID, or other source identifier as the bracketed contributor form/);
+  assert.match(prompt, /cite that original author first/);
+  assert.match(prompt, /general editor of the set is not automatically the editor of this volume/);
+  assert.match(prompt, /Preserve the collective work title, this volume's specific title/);
+});
+
+test("citation cleanup preserves title dates and bracketed publication dates, not page locators", async () => {
+  const heading = "Ward, W. Reginald, and Richard P. Heitzenrater, eds. Collected Letters (1848). Vol. 2. London: Example Press, [1990].";
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    lines: [],
+    images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
+    parsedAiResponse: {
+      heading: heading.replace("(1848).", "(1848) (Page 4).").replace("[1990].", "[1990] [p. 5]."),
+      visibleEvidence: { heading },
+    },
+  });
+  assert.equal(result.heading, heading);
+});
+
+test("collected-work author, volume title and edition editors survive heading assembly", async () => {
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    lines: [],
+    images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
+    parsedAiResponse: {
+      contributor: "John Wesley",
+      title: "The Works of John Wesley, Volume 19: Journal and Diaries II (1738–43)",
+      responsibilityStatement: "Edited by W. Reginald Ward and Richard P. Heitzenrater",
+      city: "Nashville", publisher: "Abingdon Press", year: "1990",
+      visibleEvidence: {
+        contributor: "THE WORKS OF JOHN WESLEY",
+        title: "THE WORKS OF JOHN WESLEY VOLUME 19 JOURNAL AND DIARIES II (1738–43)",
+        responsibilityStatement: "EDITED BY W. REGINALD WARD (JOURNAL) AND RICHARD P. HEITZENRATER (DIARIES)",
+        city: "NASHVILLE", publisher: "ABINGDON PRESS", year: "1990",
+      },
+    },
+  });
+  assert.equal(result.heading, "Wesley, John. The Works of John Wesley, Volume 19: Journal and Diaries II (1738–43). Edited by W. Reginald Ward and Richard P. Heitzenrater. Nashville: Abingdon Press, 1990.");
+  assert.equal(result.geminiRequestBody.contents[0].parts.filter(part => part.inlineData).length, 1);
 });

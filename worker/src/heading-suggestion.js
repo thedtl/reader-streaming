@@ -151,7 +151,10 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "For any non-Latin-script title/subtitle pair, do not bracket the main title and subtitle separately. Use one bracketed English equivalent after the full non-Latin title/subtitle, for example: 성경 강해설교: 강해설교 전개와 전달 [Biblical Preaching: The Development and Delivery of Expository Messages].",
     "Do not translate, romanize, or bracket equivalents for series titles, place names, publisher names, or responsibility names. Keep those fields in the full visible original form unless the source only shows a Latin-script form.",
     "For multiple authors, include them in Chicago bibliography order. For editors with no author, use ed. or eds. in the contributor field.",
-    "For editor labels such as General Editor, cite the role as ed. or eds. in contributor and heading. Do not write General Editor in the final heading.",
+    "For collected works, letters, journals or diaries of an explicitly identified original author, cite that original author first; put the observed editors and translators in responsibilityStatement after the title. 'Works of [person]' can identify authorship; merely naming a person as a biography's subject cannot. Do not replace the original author with this edition's editors.",
+    "Reconcile the series/half-title and volume title pages before choosing the citation: distinguish the original author, volume editors, and general/series editors. A general editor of the set is not automatically the editor of this volume. Preserve the collective work title, this volume's specific title, volume number and title date span when visible; a series name or volume number alone is not the book title.",
+    "Keep personal initials attached to the same name, including initials before a spelled-out given name and multiple editors. Preserve parenthetical dates and numbers that belong to titles; only explicit source locators such as '(Page 4)' are to be omitted.",
+    "For an editor who belongs in this volume's citation, format role labels such as General Editor as ed. or eds., not the words General Editor. This formatting rule does not establish contributor identity or override a distinct original author.",
     "If the title page identifies a book-level editor with phrases such as edited by, ouvrage édité par, edited and introduced by, or texte établi par, cite the whole book under that editor with ed. or eds. unless a distinct author is clearly identified.",
     "Do not treat names introduced only by with the collaboration of, avec la collaboration de, contributors, chapter authors, article authors, or table-of-contents entries as book-level authors/editors. Omit those names from the whole-book heading unless the request is for that specific chapter or article.",
     "Never omit named title-page contributors who supply a specific book-level responsibility. If the title page says a person supplied introduction, bibliography, translation, notes, commentary, edition, Latin text, or similar book-level work, capture that as responsibilityStatement and include it after the title.",
@@ -1648,8 +1651,8 @@ function isUsefulFrontMatterLine(text) {
 function cleanFrontMatterLine(text) {
   return String(text || "")
     .replace(/\s+/g, " ")
-    .replace(/\s*\((?:p(?:age)?\.?\s*)?\d+\)\s*(?=[,.;:]|$)/ig, "")
-    .replace(/\s*\[\s*(?:p(?:age)?\.?\s*)?\d+\s*\]\s*(?=[,.;:]|$)/ig, "")
+    .replace(/\s*\(p(?:age)?\.?\s*\d+\)\s*(?=[,.;:]|$)/ig, "")
+    .replace(/\s*\[\s*p(?:age)?\.?\s*\d+\s*\]\s*(?=[,.;:]|$)/ig, "")
     .replace(/\s+([,.;:])/g, "$1")
     .replace(/([(["'])\s+/g, "$1")
     .replace(/\s+([)\]"'])/g, "$1")
