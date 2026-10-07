@@ -117,6 +117,7 @@ async function handleSign(request, env) {
     start: url.searchParams.get("start"),
     end: url.searchParams.get("end"),
     chapter: url.searchParams.get("chapter") || url.searchParams.get("c"),
+    filename: url.searchParams.get("filename"),
     download: url.searchParams.get("download"),
     expires: url.searchParams.get("expires"),
   });
@@ -145,6 +146,7 @@ async function handleBatchSign(request, env) {
       start: chapter.start,
       end: chapter.end,
       chapter: chapter.title || chapter.chapter || chapter.name,
+      filename: chapter.filename,
       download: body.download,
       expires: body.expires,
     });
@@ -535,6 +537,7 @@ async function proxyChapterPdf(request, env, payload) {
   headers.set("x-dtl-source-pages", String(pageCount));
   headers.set("x-dtl-chapter-pages", `${startPage}-${endPage}`);
   headers.set("x-dtl-chapter-page-count", String(pageIndexes.length));
+  setChapterFilename(headers, payload.fn);
 
   return new Response(request.method === "HEAD" ? null : chapterBytes, {
     status: 200,
@@ -586,6 +589,7 @@ async function proxyChapterPdfViaSlicer(request, env, payload, sourceBytes = 0) 
   copyHeader(slicerResponse.headers, headers, "x-dtl-chapter-pages");
   copyHeader(slicerResponse.headers, headers, "x-dtl-chapter-page-count");
   copyHeader(slicerResponse.headers, headers, "x-dtl-slicer-ms");
+  setChapterFilename(headers, payload.fn);
 
   return new Response(request.method === "HEAD" ? null : slicerResponse.body, {
     status: 200,
@@ -908,6 +912,10 @@ function buildPayload(input) {
     c: String(input.chapter || "Chapter").slice(0, 180),
     iat: now,
   };
+  const filename = normalizeChapterFilename(input.filename);
+  if (filename) {
+    payload.fn = filename;
+  }
 
   if (mode !== "pdf") {
     throw new HttpError(400, "mode must be pdf");
@@ -919,6 +927,33 @@ function buildPayload(input) {
   }
 
   return payload;
+}
+
+function normalizeChapterFilename(value) {
+  if (typeof value !== "string") return "";
+  const stem = value.normalize("NFC")
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/g, "-")
+    .replace(/[\uD800-\uDFFF]/gu, "-")
+    .trim().replace(/\.pdf$/i, "").replace(/^[ .]+|[ .]+$/g, "");
+  if (!stem) return "";
+  // Keep the book/volume prefix when a long chapter title needs shortening.
+  const encoder = new TextEncoder();
+  let name = "", bytes = 0;
+  for (const character of stem) {
+    const length = encoder.encode(character).length;
+    if (bytes + length > 236) break;
+    name += character;
+    bytes += length;
+  }
+  return name.trimEnd() + ".pdf";
+}
+
+function setChapterFilename(headers, filename) {
+  if (!filename) return;
+  const ascii = filename.replace(/[^\x20-\x7e]|%/gu, "_");
+  const encoded = encodeURIComponent(filename).replace(/[!'()*]/g,
+    character => "%" + character.charCodeAt(0).toString(16).toUpperCase());
+  headers.set("content-disposition", `inline; filename="${ascii}"; filename*=UTF-8''${encoded}`);
 }
 
 function normalizeDropboxRef(value) {
@@ -1042,6 +1077,7 @@ function publicPayload(payload) {
     e: payload.e,
     d: payload.d,
     c: payload.c,
+    ...(payload.fn ? { fn: payload.fn } : {}),
     exp: payload.exp || null,
   };
 }
@@ -1322,7 +1358,7 @@ function corsHeaders(request, env) {
     "access-control-allow-origin": origin,
     "access-control-allow-methods": "GET,HEAD,POST,OPTIONS",
     "access-control-allow-headers": "content-type,range",
-    "access-control-expose-headers": "accept-ranges,content-length,content-range,content-type,etag,last-modified,x-dtl-chapter-page-count,x-dtl-chapter-pages,x-dtl-fallback-reason,x-dtl-reader-session,x-dtl-restriction-mode,x-dtl-slicer-mode,x-dtl-slicer-ms,x-dtl-source-pages",
+    "access-control-expose-headers": "accept-ranges,content-disposition,content-length,content-range,content-type,etag,last-modified,x-dtl-chapter-page-count,x-dtl-chapter-pages,x-dtl-fallback-reason,x-dtl-reader-session,x-dtl-restriction-mode,x-dtl-slicer-mode,x-dtl-slicer-ms,x-dtl-source-pages",
     vary: "Origin",
   });
 }

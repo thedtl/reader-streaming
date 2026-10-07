@@ -34,8 +34,12 @@ const helpers = {
 async function requestSuggestion({ parsedAiResponse, env = {}, lines = BIEREMA_LINES, images = [], sourceAuthorHint = "", sourceTitleHint = "" } = {}) {
   const originalFetch = globalThis.fetch;
   let geminiRequestBody = null;
+  let geminiCallCount = 0;
+  let geminiRequestPath = "";
   if (parsedAiResponse) {
     globalThis.fetch = async (url, init) => {
+      geminiCallCount += 1;
+      geminiRequestPath = new URL(url).pathname;
       geminiRequestBody = JSON.parse(init?.body || "{}");
       return new Response(JSON.stringify({
       candidates: [{
@@ -53,7 +57,7 @@ async function requestSuggestion({ parsedAiResponse, env = {}, lines = BIEREMA_L
       body: JSON.stringify({ password: "test", lines, images, sourceAuthorHint, sourceTitleHint }),
     });
     const response = await handleSuggestHeading(request, env, helpers);
-    return { ...(await response.json()), geminiRequestBody };
+    return { ...(await response.json()), geminiRequestBody, geminiCallCount, geminiRequestPath };
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -64,6 +68,7 @@ test("heuristic fallback extracts full Bierema citation", async () => {
 
   assert.equal(result.source, "heuristic");
   assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
+  assert.equal(result.downloadVolume, null);
 });
 
 test("bad AI heading-only citation is rejected in favor of extracted fields", async () => {
@@ -112,6 +117,7 @@ test("complete AI heading-only citation can pass when it includes extracted core
 
   assert.equal(result.source, "ai");
   assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
+  assert.equal(result.downloadVolume, null);
 });
 
 test("AI responsibility text normalizes all-caps names and removes order credentials", async () => {
@@ -581,6 +587,10 @@ test("Worker forwards rendered front and imprint images to Gemini", async () => 
   const parts = result.geminiRequestBody.contents[0].parts;
   const prompt = parts[0].text;
   assert.equal(parts.filter(part => part.inlineData).length, 18);
+  assert.equal(result.geminiCallCount, 1);
+  assert.equal(result.geminiRequestPath, "/v1beta/models/gemini-2.5-flash:generateContent");
+  assert.deepEqual(result.geminiRequestBody.generationConfig, { temperature: 0.1, responseMimeType: "application/json" });
+  assert.deepEqual(parts.filter(part => part.inlineData).map(part => part.inlineData), images.slice(0, 18).map(({ mimeType, data }) => ({ mimeType, data })));
   assert(parts.some(part => part.text === "Rendered PDF page 332"));
   assert.match(prompt, /Do not split a single stacked title block into title plus series/);
   assert.match(prompt, /For an editor who belongs in this volume's citation, format role labels such as General Editor as ed\. or eds\./);
@@ -590,6 +600,9 @@ test("Worker forwards rendered front and imprint images to Gemini", async () => 
   assert.match(prompt, /cite that original author first/);
   assert.match(prompt, /general editor of the set is not automatically the editor of this volume/);
   assert.match(prompt, /Preserve the collective work title, this volume's specific title/);
+  assert.match(prompt, /A publisher's academic series containing distinct books is not a multi-volume work/);
+  assert.match(prompt, /preserving its language and numeral form/);
+  assert.match(prompt, /Do not infer either from filenames, hints, order, or a bare series number/);
 });
 
 test("citation cleanup preserves title dates and bracketed publication dates, not page locators", async () => {
@@ -614,16 +627,83 @@ test("collected-work author, volume title and edition editors survive heading as
     parsedAiResponse: {
       contributor: "John Wesley",
       title: "The Works of John Wesley, Volume 19: Journal and Diaries II (1738–43)",
+      multiVolumeWorkTitle: "The Works of John Wesley",
+      workVolume: "Volume 19",
       responsibilityStatement: "Edited by W. Reginald Ward and Richard P. Heitzenrater",
       city: "Nashville", publisher: "Abingdon Press", year: "1990",
       visibleEvidence: {
         contributor: "THE WORKS OF JOHN WESLEY",
         title: "THE WORKS OF JOHN WESLEY VOLUME 19 JOURNAL AND DIARIES II (1738–43)",
+        multiVolumeWorkTitle: "The Works of John Wesley",
+        workVolume: "Volume 19",
         responsibilityStatement: "EDITED BY W. REGINALD WARD (JOURNAL) AND RICHARD P. HEITZENRATER (DIARIES)",
         city: "NASHVILLE", publisher: "ABINGDON PRESS", year: "1990",
       },
     },
   });
   assert.equal(result.heading, "Wesley, John. The Works of John Wesley, Volume 19: Journal and Diaries II (1738–43). Edited by W. Reginald Ward and Richard P. Heitzenrater. Nashville: Abingdon Press, 1990.");
+  assert.deepEqual(result.downloadVolume, { title: "The Works of John Wesley", designation: "Volume 19" });
   assert.equal(result.geminiRequestBody.contents[0].parts.filter(part => part.inlineData).length, 1);
+  assert.equal(result.geminiCallCount, 1);
+});
+
+test("publisher academic series stays in the citation without download volume metadata", async () => {
+  const heading = "Smith, Jane. A Distinct Book Title. Wissenschaftliche Untersuchungen zum Neuen Testament, 421. Tübingen: Example Press, 2020.";
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" }, lines: [],
+    images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
+    parsedAiResponse: {
+      heading, series: "Wissenschaftliche Untersuchungen zum Neuen Testament", seriesNumber: "421",
+      multiVolumeWorkTitle: "", workVolume: "",
+      visibleEvidence: { heading, series: "Wissenschaftliche Untersuchungen zum Neuen Testament", seriesNumber: "421", multiVolumeWorkTitle: "", workVolume: "" },
+    },
+  });
+  assert.equal(result.heading, heading);
+  assert.equal(result.downloadVolume, null);
+});
+
+test("download volume preserves observed language and numeral form while reflowing whitespace", async () => {
+  for (const [title, designation] of [["Gesammelte Werke", "Band XIX"], ["全集", "第十九巻"]]) {
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake", GEMINI_MODEL: "configured-model" },
+      parsedAiResponse: {
+        heading: EXPECTED_BIEREMA_HEADING, multiVolumeWorkTitle: title, workVolume: designation,
+        visibleEvidence: { heading: EXPECTED_BIEREMA_HEADING, multiVolumeWorkTitle: title.replaceAll(" ", "\n"), workVolume: designation.replaceAll(" ", "\n") },
+      },
+    });
+    assert.deepEqual(result.downloadVolume, { title, designation });
+    assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
+    assert.equal(result.geminiCallCount, 1);
+    assert.equal(result.geminiRequestPath, "/v1beta/models/configured-model:generateContent");
+  }
+});
+
+test("missing, malformed or mismatched volume evidence does not affect the heading", async () => {
+  const metadata = { multiVolumeWorkTitle: "Collected Works", workVolume: "Volume IV" };
+  const cases = [
+    {},
+    { ...metadata, visibleEvidence: {} },
+    { ...metadata, visibleEvidence: { multiVolumeWorkTitle: "Collected Works" } },
+    { ...metadata, visibleEvidence: { workVolume: "Volume IV" } },
+    { ...metadata, visibleEvidence: { ...metadata, workVolume: "Volume VI" } },
+    { ...metadata, workVolume: "Volume I", visibleEvidence: metadata },
+    { ...metadata, visibleEvidence: { ...metadata, multiVolumeWorkTitle: "Another Work" } },
+    { ...metadata, visibleEvidence: { ...metadata, workVolume: ["Volume IV"] } },
+    { ...metadata, visibleEvidence: { ...metadata, workVolume: "  " } },
+    { ...metadata, workVolume: 4, visibleEvidence: metadata },
+    { ...metadata, multiVolumeWorkTitle: null, visibleEvidence: metadata },
+    { ...metadata, workVolume: "", visibleEvidence: metadata },
+    { ...metadata, evidence: metadata },
+  ];
+  for (const candidate of cases) {
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      parsedAiResponse: { ...candidate, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: { ...candidate.visibleEvidence, heading: EXPECTED_BIEREMA_HEADING } },
+    });
+    assert.equal(result.downloadVolume, null, JSON.stringify(candidate));
+    assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
+  }
+  const empty = await requestSuggestion({ lines: [] });
+  assert.equal(empty.source, "none");
+  assert.equal(empty.downloadVolume, null);
 });

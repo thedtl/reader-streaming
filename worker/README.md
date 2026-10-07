@@ -94,6 +94,17 @@ original reader/ToC services, PDF delivery and existing files are unchanged.
 
 ## Local check
 
+Chapter filename support (not yet released): the existing metadata call supplies
+an evidenced common work title and volume designation only for numbered volumes
+of one multi-volume work, not publisher series of distinct books. The generator
+can send optional `chapters[].filename` to `/batch-sign` (or `filename` to `/sign`).
+It is sanitized and signed as `fn`; both chapter-only delivery paths expose an
+inline UTF-8 Content-Disposition filename for PDF.js. Generated labels put the volume
+first, before the work and chapter titles, within a 240-byte filename bound.
+Tokens without `fn` retain their old behavior. Download permissions, source ranges,
+PDF title metadata and the slicer's unbuffered body are unchanged. No new model
+call, source-page read, storage location, secret or service is required.
+
 ```sh
 npm ci
 npm run check

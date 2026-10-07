@@ -17,22 +17,23 @@ export async function handleSuggestHeading(request, env, helpers) {
   if (lines.length === 0 && images.length === 0) {
     return helpers.json({
       heading: "",
+      downloadVolume: null,
       source: "none",
       note: "No usable front-matter text was provided.",
     }, request, env);
   }
 
   if (env.GEMINI_API_KEY) {
-    const aiHeading = await suggestHeadingWithGemini(lines, images, { sourceAuthorHint, sourceTitleHint }, env).catch(error => {
+    const suggestion = await suggestHeadingWithGemini(lines, images, { sourceAuthorHint, sourceTitleHint }, env).catch(error => {
       console.warn("Gemini heading suggestion failed", {
         message: error.message || String(error),
       });
-      return "";
+      return null;
     });
 
-    if (aiHeading) {
+    if (suggestion?.heading) {
       return helpers.json({
-        heading: aiHeading,
+        ...suggestion,
         source: "ai",
         note: "Review before generating links.",
       }, request, env);
@@ -41,6 +42,7 @@ export async function handleSuggestHeading(request, env, helpers) {
 
   return helpers.json({
     heading: buildHeadingSuggestion(lines),
+    downloadVolume: null,
     source: "heuristic",
     note: env.GEMINI_API_KEY
       ? "AI did not return a usable heading, so the Worker used the local fallback."
@@ -164,6 +166,8 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "Do not put title, subtitle, series, or edition text in contributor. For example, if a title page says 'ADULT LEARNING / Linking Theory and Practice / Second Edition / Laura L. Bierema, Monica Fedeli, Sharan B. Merriam', contributor is the three named people, title is Adult Learning: Linking Theory and Practice, and edition is Second Edition.",
     "An edition statement such as Second Edition is never the title by itself; put it in edition and keep looking for the actual title.",
     "Extract series title and series volume/number when they are clearly visible as a separate series statement, especially for commentary series or multi-volume sets. Do not move words from the displayed title block into series.",
+    "Separately, fill multiVolumeWorkTitle and workVolume only when this is a numbered volume of the same multi-volume work under a common collective title. A publisher's academic series containing distinct books is not a multi-volume work, even when its books have series numbers; leave both fields blank for such series or an uncertain relationship. Keep ordinary series details in the citation fields above.",
+    "multiVolumeWorkTitle is the visibly stated common work title; workVolume is this volume's complete observed designation, preserving its language and numeral form. Copy both verbatim apart from whitespace, with the exact supporting words in the same visibleEvidence fields. Do not infer either from filenames, hints, order, or a bare series number. Leave both blank if either is not visible. These download fields do not replace or shorten the full bibliographic heading.",
     "Look for publication facts on copyright/title-page verso pages and final imprint/copyright pages: publisher name, publication place, and publication year.",
     "If a page lists both an original or first-publication date and a later printing or edition date, use the later visible printing/edition date for this scanned copy.",
     "Include a visible publication place when clearly identified in the front matter.",
@@ -177,7 +181,7 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "When visibleEvidence.publisher contains a labeled imprint publisher, copy that exact publisher name into publisher and into the final heading. Do not shorten 도서출판 꿈미 to 꿈미, do not rewrite it as 꾸밈, and do not use a design/production credit as publisher.",
     "If place, publisher, or year are not visible, omit only the missing pieces instead of inventing them.",
     "Ignore ISBN, copyright boilerplate, library-cataloging blocks, table-of-contents lines, and chapter-title lines.",
-    "Return JSON only, with this shape: {\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\",\"visibleEvidence\":{\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\"},\"warnings\":[\"...\"]}.",
+    "Return JSON only, with this shape: {\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"multiVolumeWorkTitle\":\"...\",\"workVolume\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\",\"visibleEvidence\":{\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"multiVolumeWorkTitle\":\"...\",\"workVolume\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\"},\"warnings\":[\"...\"]}.",
     "",
     sourceAuthorHint ? `Filename/author hint for bracketed contributor form only: ${sourceAuthorHint}` : "",
     sourceTitleHint ? `Filename/title hint for bracketed English title only: ${sourceTitleHint}` : "",
@@ -223,7 +227,22 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
   const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
   const parsed = JSON.parse(responseText || "{}");
   logAiCitationSummary(parsed);
-  return buildAiCitation(parsed, lines, hints);
+  return {
+    heading: buildAiCitation(parsed, lines, hints),
+    downloadVolume: buildDownloadVolume(parsed),
+  };
+}
+
+function buildDownloadVolume(parsed) {
+  const evidence = parsed.visibleEvidence;
+  const [title, designation] = ["multiVolumeWorkTitle", "workVolume"].map(key => {
+    if (typeof parsed[key] !== "string" || typeof evidence?.[key] !== "string") return "";
+    const value = parsed[key].replace(/\s+/g, " ").trim();
+    return supportedAiField(parsed, evidence, key) && evidence[key].replace(/\s+/g, " ").trim() === value
+      ? value
+      : "";
+  });
+  return title && designation ? { title, designation } : null;
 }
 
 function logAiCitationSummary(parsed) {
