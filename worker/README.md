@@ -84,6 +84,14 @@ Only explicit page locators such as `(Page 4)` are stripped, not title years.
 These changes add no pages or model calls. Mocked regression tests check prompt
 delivery and citation assembly, not fresh model-reading accuracy.
 
+Released 2026-10-06: Worker source `4238114`, deployed version
+`f27d5cd7-8833-45d8-bf81-8be91fc47f0f` at 100%; generator `ba27d15`.
+All 28 Worker and 13 generator checks pass. Published generator bytes match the
+tested source; its live form preserves the reported Wesley title and initials.
+Health, authentication rejection and Pages CORS pass. Existing variables,
+secret bindings and compatibility date are unchanged. No fresh AI scan ran;
+original reader/ToC services, PDF delivery and existing files are unchanged.
+
 ## Local check
 
 ```sh
