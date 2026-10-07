@@ -92,9 +92,9 @@ Health, authentication rejection and Pages CORS pass. Existing variables,
 secret bindings and compatibility date are unchanged. No fresh AI scan ran;
 original reader/ToC services, PDF delivery and existing files are unchanged.
 
-## Local check
+## Chapter PDF filenames
 
-Chapter filename support (not yet released): the existing metadata call supplies
+Chapter filename support: the existing metadata call supplies
 an evidenced common work title and volume designation only for numbered volumes
 of one multi-volume work, not publisher series of distinct books. The generator
 can send optional `chapters[].filename` to `/batch-sign` (or `filename` to `/sign`).
@@ -104,6 +104,15 @@ first, before the work and chapter titles, within a 240-byte filename bound.
 Tokens without `fn` retain their old behavior. Download permissions, source ranges,
 PDF title metadata and the slicer's unbuffered body are unchanged. No new model
 call, source-page read, storage location, secret or service is required.
+
+Released 2026-10-07: Worker source `8cd177f`, version
+`262bc981-3ddf-4a33-be7c-101bbcce9634` at 100%; generator `e698c17`.
+All 50 offline checks pass. Published generator bytes match the tested source;
+live health, authentication rejection and filename-header CORS checks pass.
+Variables, secret binding names and runtime compatibility date are unchanged.
+No fresh AI scan or patron download was run; old links and services are unchanged.
+
+## Local check
 
 ```sh
 npm ci
