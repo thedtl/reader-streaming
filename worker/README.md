@@ -84,7 +84,7 @@ Only explicit page locators such as `(Page 4)` are stripped, not title years.
 These changes add no pages or model calls. Mocked regression tests check prompt
 delivery and citation assembly, not fresh model-reading accuracy.
 
-2026-10-08 correction (not deployed): the God Who Creates scan contains hidden
+2026-10-08 correction: the God Who Creates scan contains hidden
 OCR such as `P. BBovx`, while PDF 3 visibly credits William P. Brown and
 S. Dean McBride Jr. PDF 4 dates this book to 2000; 1989 belongs to the quoted
 NRSV. A bounded replay of the exposed OCR lines reproduced the reported wrong
@@ -101,6 +101,16 @@ they never appear as successful invented citations. No model or page-count chang
 All 40 Worker and 20 generator checks pass with mocked inference. The initial
 full-suite attempt lacked local pdf-lib; the rerun used the already bundled
 matching 1.17.1 package without installing anything. Fresh AI accuracy is untested.
+
+Released 2026-10-08: Worker source `d83d61a`, version
+`ea580e80-5096-4528-8790-9e70da8b8a4a` at 100%; generator `db85cde`.
+All 60 offline checks pass. Published generator bytes match the tested source;
+live health, authentication rejection and Pages CORS checks pass. Wrangler
+4.103.0 matches the project pin; packaging reused bundled pdf-lib 1.17.1 through
+a temporary dependency symlink, without an install or lockfile change.
+Runtime variables, secret binding names and compatibility date are unchanged.
+No fresh AI scan, PDF download, storage change or stable-service change ran.
+Existing citations/manual edits are not rewritten; rescan or edit them explicitly.
 
 Released 2026-10-06: Worker source `4238114`, deployed version
 `f27d5cd7-8833-45d8-bf81-8be91fc47f0f` at 100%; generator `ba27d15`.
