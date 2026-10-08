@@ -84,6 +84,24 @@ Only explicit page locators such as `(Page 4)` are stripped, not title years.
 These changes add no pages or model calls. Mocked regression tests check prompt
 delivery and citation assembly, not fresh model-reading accuracy.
 
+2026-10-08 correction (not deployed): the God Who Creates scan contains hidden
+OCR such as `P. BBovx`, while PDF 3 visibly credits William P. Brown and
+S. Dean McBride Jr. PDF 4 dates this book to 2000; 1989 belongs to the quoted
+NRSV. A bounded replay of the exposed OCR lines reproduced the reported wrong
+name/title/date through the heuristic fallback. The original API response was
+not retained, so the reason that run fell back is not established.
+
+Remove the Worker and browser text-layer citation builders and their overrides
+of image readings. The previous overrides addressed real contributor/title
+mistakes, but unreliable OCR cannot repair them: missing supported core fields
+or an edition-only title now needs manual review. Read complete visible title,
+credit and publication blocks in the existing single call, for every script.
+Failed/incomplete scans leave metadata editable and chapter links available;
+they never appear as successful invented citations. No model or page-count change.
+All 40 Worker and 20 generator checks pass with mocked inference. The initial
+full-suite attempt lacked local pdf-lib; the rerun used the already bundled
+matching 1.17.1 package without installing anything. Fresh AI accuracy is untested.
+
 Released 2026-10-06: Worker source `4238114`, deployed version
 `f27d5cd7-8833-45d8-bf81-8be91fc47f0f` at 100%; generator `ba27d15`.
 All 28 Worker and 13 generator checks pass. Published generator bytes match the

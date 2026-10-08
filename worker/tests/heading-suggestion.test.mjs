@@ -4,6 +4,10 @@ import test from "node:test";
 import { handleSuggestHeading } from "../src/heading-suggestion.js";
 
 const EXPECTED_BIEREMA_HEADING = "Bierema, Laura L., Monica Fedeli, and Sharan B. Merriam. Adult Learning: Linking Theory and Practice. Second edition. Hoboken, New Jersey: John Wiley & Sons, Inc., 2025.";
+const BIEREMA_CORE = {
+  contributor: "Laura L. Bierema, Monica Fedeli, Sharan B. Merriam",
+  title: "Adult Learning: Linking Theory and Practice",
+};
 
 const BIEREMA_LINES = [
   { text: "ADULT LEARNING", pageNumber: 1, fontSize: 30 },
@@ -31,25 +35,26 @@ const helpers = {
   },
 };
 
-async function requestSuggestion({ parsedAiResponse, env = {}, lines = BIEREMA_LINES, images = [], sourceAuthorHint = "", sourceTitleHint = "" } = {}) {
+async function requestSuggestion({ parsedAiResponse, responseEnvelope, fetchError, env = {}, lines = BIEREMA_LINES, images = [], sourceAuthorHint = "", sourceTitleHint = "" } = {}) {
   const originalFetch = globalThis.fetch;
   let geminiRequestBody = null;
   let geminiCallCount = 0;
   let geminiRequestPath = "";
-  if (parsedAiResponse) {
-    globalThis.fetch = async (url, init) => {
-      geminiCallCount += 1;
-      geminiRequestPath = new URL(url).pathname;
-      geminiRequestBody = JSON.parse(init?.body || "{}");
-      return new Response(JSON.stringify({
+  globalThis.fetch = async (url, init) => {
+    geminiCallCount += 1;
+    geminiRequestPath = new URL(url).pathname;
+    geminiRequestBody = JSON.parse(init?.body || "{}");
+    if (fetchError) throw fetchError;
+    if (!parsedAiResponse && !responseEnvelope) throw new Error("Unexpected provider request in test");
+    return new Response(JSON.stringify(responseEnvelope || {
       candidates: [{
+        finishReason: "STOP",
         content: {
           parts: [{ text: JSON.stringify(parsedAiResponse) }],
         },
       }],
-      }), { status: 200 });
-    };
-  }
+    }), { status: 200 });
+  };
 
   try {
     const request = new Request("https://example.test/suggest-heading", {
@@ -63,15 +68,16 @@ async function requestSuggestion({ parsedAiResponse, env = {}, lines = BIEREMA_L
   }
 }
 
-test("heuristic fallback extracts full Bierema citation", async () => {
+test("missing AI key leaves citation unfilled even with clean embedded text", async () => {
   const result = await requestSuggestion();
 
-  assert.equal(result.source, "heuristic");
-  assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
+  assert.equal(result.source, "unavailable");
+  assert.equal(result.heading, "");
   assert.equal(result.downloadVolume, null);
+  assert.equal(result.geminiCallCount, 0);
 });
 
-test("bad AI heading-only citation is rejected in favor of extracted fields", async () => {
+test("bad AI heading-only citation is unfilled instead of repaired from embedded text", async () => {
   const result = await requestSuggestion({
     env: { GEMINI_API_KEY: "fake" },
     parsedAiResponse: {
@@ -82,12 +88,11 @@ test("bad AI heading-only citation is rejected in favor of extracted fields", as
     },
   });
 
-  assert.equal(result.source, "ai");
-  assert.notEqual(result.heading, "Learning, Adult. Second Edition.");
-  assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
+  assert.equal(result.source, "none");
+  assert.equal(result.heading, "");
 });
 
-test("bad AI structured citation is rejected in favor of extracted fields", async () => {
+test("edition mistaken for title is unfilled instead of repaired from embedded text", async () => {
   const result = await requestSuggestion({
     env: { GEMINI_API_KEY: "fake" },
     parsedAiResponse: {
@@ -100,16 +105,31 @@ test("bad AI structured citation is rejected in favor of extracted fields", asyn
     },
   });
 
-  assert.equal(result.source, "ai");
-  assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
+  assert.equal(result.source, "none");
+  assert.equal(result.heading, "");
 });
 
-test("complete AI heading-only citation can pass when it includes extracted core facts", async () => {
+test("a genuine title about an edition remains valid without publication facts", async () => {
+  const title = "The First Edition of Paradise Lost";
   const result = await requestSuggestion({
     env: { GEMINI_API_KEY: "fake" },
     parsedAiResponse: {
+      contributor: "Jane Smith", title,
+      visibleEvidence: { contributor: "Jane Smith", title },
+    },
+  });
+  assert.equal(result.source, "ai");
+  assert.equal(result.heading, `Smith, Jane. ${title}.`);
+});
+
+test("complete AI heading passes with separately supported contributor and title", async () => {
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    parsedAiResponse: {
+      ...BIEREMA_CORE,
       heading: EXPECTED_BIEREMA_HEADING,
       visibleEvidence: {
+        ...BIEREMA_CORE,
         heading: "Laura L. Bierema, Monica Fedeli, Sharan B. Merriam ADULT LEARNING Linking Theory and Practice Second Edition Published by John Wiley & Sons, Inc., Hoboken, New Jersey",
       },
     },
@@ -120,14 +140,110 @@ test("complete AI heading-only citation can pass when it includes extracted core
   assert.equal(result.downloadVolume, null);
 });
 
+test("garbled hidden text never overwrites the supported image reading", async () => {
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    lines: [
+      { text: "CREATES", pageNumber: 3, fontSize: 30 },
+      { text: "P. BBovx", pageNumber: 3, fontSize: 16 },
+      { text: "Edited by", pageNumber: 3, fontSize: 14 },
+      { text: "S. E.", pageNumber: 3, fontSize: 14 },
+      { text: "o Wm. B. Eerdmans Publishing Co, Grand RaPids", pageNumber: 4, fontSize: 10 },
+      { text: "New Revised Standard Version Copyright 1989", pageNumber: 4, fontSize: 10 },
+    ],
+    images: [{ pageNumber: 3, mimeType: "image/jpeg", data: "ZmFrZQ==" }],
+    parsedAiResponse: {
+      contributor: "William P. Brown and S. Dean McBride Jr., eds.",
+      title: "God Who Creates: Essays in Honor of W. Sibley Towner",
+      city: "Grand Rapids", publisher: "William B. Eerdmans Publishing Company", year: "2000",
+      visibleEvidence: {
+        contributor: "Edited by William P. Brown and S. Dean McBride Jr.",
+        title: "GOD WHO CREATES Essays in Honor of W. Sibley Towner",
+        city: "GRAND RAPIDS", publisher: "WILLIAM B. EERDMANS PUBLISHING COMPANY",
+        year: "Copyright © 2000",
+      },
+    },
+  });
+  assert.equal(result.source, "ai");
+  assert.match(result.heading, /^Brown, William P\., and S\. Dean McBride Jr\., eds\./);
+  assert.match(result.heading, /God Who Creates: Essays in Honor of W\. Sibley Towner/);
+  assert.match(result.heading, /2000\.$/);
+  assert.doesNotMatch(result.heading, /BBovx|1989|Edited by\./);
+  assert.equal(result.geminiCallCount, 1);
+});
+
+test("empty or unsupported AI core leaves citation unfilled without text fallback", async () => {
+  for (const parsedAiResponse of [
+    {},
+    { heading: "", visibleEvidence: {} },
+    { contributor: BIEREMA_CORE.contributor, visibleEvidence: { contributor: BIEREMA_CORE.contributor } },
+    { title: BIEREMA_CORE.title, visibleEvidence: { title: BIEREMA_CORE.title } },
+    { ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: { title: BIEREMA_CORE.title } },
+    { ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: { contributor: BIEREMA_CORE.contributor } },
+  ]) {
+    const result = await requestSuggestion({ env: { GEMINI_API_KEY: "fake" }, parsedAiResponse });
+    assert.equal(result.heading, "");
+    assert.equal(result.source, "none");
+    assert.equal(result.downloadVolume, null);
+    assert.equal(result.geminiCallCount, 1);
+  }
+});
+
+test("transport failure is unavailable, never a heuristic citation", async () => {
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" }, fetchError: new Error("Simulated transport failure"),
+  });
+  assert.equal(result.heading, "");
+  assert.equal(result.source, "unavailable");
+  assert.equal(result.downloadVolume, null);
+  assert.equal(result.geminiCallCount, 1);
+});
+
+test("response assembly joins text parts and excludes thinking content", async () => {
+  const answer = JSON.stringify({ ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: BIEREMA_CORE });
+  const split = Math.floor(answer.length / 2);
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    responseEnvelope: {
+      candidates: [{ finishReason: "STOP", content: { parts: [
+        { thought: true, text: "Internal reasoning is not the JSON answer." },
+        { text: answer.slice(0, split) }, { text: answer.slice(split) },
+      ] } }],
+    },
+  });
+  assert.equal(result.source, "ai");
+  assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
+  assert.equal(result.geminiCallCount, 1);
+});
+
+test("nonterminal response is rejected even when its partial JSON parses", async () => {
+  for (const finishReason of ["MAX_TOKENS", "FINISH_REASON_UNSPECIFIED", undefined]) {
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      responseEnvelope: {
+        candidates: [{ finishReason, content: { parts: [{
+          text: JSON.stringify({ ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: BIEREMA_CORE }),
+        }] } }],
+      },
+    });
+    assert.equal(result.heading, "");
+    assert.equal(result.source, "unavailable");
+    assert.equal(result.geminiCallCount, 1);
+  }
+});
+
 test("AI responsibility text normalizes all-caps names and removes order credentials", async () => {
   const result = await requestSuggestion({
     env: { GEMINI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
+      contributor: "Bonaventure",
+      title: "Itinéraire de l'esprit jusqu'en Dieu",
       heading: "Bonaventure, Itinéraire de l'esprit jusqu'en Dieu, Introduction, notes et glossaire par Laure SOLIGNAC, traduction par André MÉNARD ofmcap, Translatio Philosophies Médiévales (Paris: Librairie Philosophique J. Vrin, 2019).",
       visibleEvidence: {
+        contributor: "Bonaventure",
+        title: "Itinéraire de l'esprit jusqu'en Dieu",
         heading: "Bonaventure Itinéraire de l'esprit jusqu'en Dieu Introduction, notes et glossaire par Laure SOLIGNAC traduction par André MÉNARD ofmcap Translatio Philosophies Médiévales Paris Librairie Philosophique J. Vrin 2019",
       },
     },
@@ -196,14 +312,18 @@ test("credential initials are removed before author splitting", async () => {
   assert.doesNotMatch(result.heading, /Ph\.?D|M\.?D/i);
 });
 
-test("AI heading-only citation repairs malformed inverted initial author", async () => {
+test("supported AI citation formats malformed inverted initial author", async () => {
   const result = await requestSuggestion({
     env: { GEMINI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
+      contributor: "Haddon W. Robinson",
+      title: "Biblical Preaching: The Development and Delivery of Expository Messages",
       heading: "Robinson, and Haddon W. Biblical Preaching: The Development and Delivery of Expository Messages. Fourth Edition. Bible Baptist Theological Seminary Press, 2025.",
       visibleEvidence: {
+        contributor: "Haddon W. Robinson",
+        title: "Biblical Preaching: The Development and Delivery of Expository Messages",
         heading: "Haddon W. Robinson Biblical Preaching The Development and Delivery of Expository Messages Fourth Edition Bible Baptist Theological Seminary Press 2025",
       },
     },
@@ -348,6 +468,7 @@ test("non-Latin comma author is kept as one author without added and", async () 
 
 test("Korean publication labels are accepted while production credits are ignored", async () => {
   const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
     lines: [
       { text: "이수인", pageNumber: 1, fontSize: 16, index: 1 },
       { text: "미디어 리터러시 수업", pageNumber: 1, fontSize: 28, index: 2 },
@@ -357,9 +478,20 @@ test("Korean publication labels are accepted while production credits are ignore
       { text: "주소 서울시 강동구 양재대로81길 39, 202호", pageNumber: 332, fontSize: 10, index: 6 },
       { text: "초판 2쇄 발행일 2023년 7월 18일", pageNumber: 332, fontSize: 10, index: 7 },
     ],
+    images: [{ pageNumber: 332, mimeType: "image/jpeg", data: "ZmFrZQ==" }],
+    parsedAiResponse: {
+      contributor: "이수인", title: "미디어 리터러시 수업: 인포데믹 시대의 그리스도인을 위한",
+      city: "서울시", publisher: "도서출판 꿈미", year: "2023",
+      visibleEvidence: {
+        contributor: "이수인", title: "미디어 리터러시 수업 인포데믹 시대의 그리스도인을 위한",
+        city: "주소 서울시 강동구 양재대로81길 39, 202호",
+        publisher: "발행처 도서출판 꿈미",
+        year: "초판 2쇄 발행일 2023년 7월 18일",
+      },
+    },
   });
 
-  assert.equal(result.source, "heuristic");
+  assert.equal(result.source, "ai");
   assert.match(result.heading, /서울시: 도서출판 꿈미, 2023\./);
   assert.doesNotMatch(result.heading, /꾸밈/);
 });
@@ -612,8 +744,13 @@ test("citation cleanup preserves title dates and bracketed publication dates, no
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
+      contributor: "W. Reginald Ward and Richard P. Heitzenrater, eds.",
+      title: "Collected Letters (1848)",
       heading: heading.replace("(1848).", "(1848) (Page 4).").replace("[1990].", "[1990] [p. 5]."),
-      visibleEvidence: { heading },
+      visibleEvidence: {
+        contributor: "W. Reginald Ward and Richard P. Heitzenrater, eds.",
+        title: "Collected Letters (1848)", heading,
+      },
     },
   });
   assert.equal(result.heading, heading);
@@ -653,9 +790,10 @@ test("publisher academic series stays in the citation without download volume me
     env: { GEMINI_API_KEY: "fake" }, lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
+      contributor: "Jane Smith", title: "A Distinct Book Title",
       heading, series: "Wissenschaftliche Untersuchungen zum Neuen Testament", seriesNumber: "421",
       multiVolumeWorkTitle: "", workVolume: "",
-      visibleEvidence: { heading, series: "Wissenschaftliche Untersuchungen zum Neuen Testament", seriesNumber: "421", multiVolumeWorkTitle: "", workVolume: "" },
+      visibleEvidence: { contributor: "Jane Smith", title: "A Distinct Book Title", heading, series: "Wissenschaftliche Untersuchungen zum Neuen Testament", seriesNumber: "421", multiVolumeWorkTitle: "", workVolume: "" },
     },
   });
   assert.equal(result.heading, heading);
@@ -667,8 +805,9 @@ test("download volume preserves observed language and numeral form while reflowi
     const result = await requestSuggestion({
       env: { GEMINI_API_KEY: "fake", GEMINI_MODEL: "configured-model" },
       parsedAiResponse: {
+        ...BIEREMA_CORE,
         heading: EXPECTED_BIEREMA_HEADING, multiVolumeWorkTitle: title, workVolume: designation,
-        visibleEvidence: { heading: EXPECTED_BIEREMA_HEADING, multiVolumeWorkTitle: title.replaceAll(" ", "\n"), workVolume: designation.replaceAll(" ", "\n") },
+        visibleEvidence: { ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, multiVolumeWorkTitle: title.replaceAll(" ", "\n"), workVolume: designation.replaceAll(" ", "\n") },
       },
     });
     assert.deepEqual(result.downloadVolume, { title, designation });
@@ -698,7 +837,7 @@ test("missing, malformed or mismatched volume evidence does not affect the headi
   for (const candidate of cases) {
     const result = await requestSuggestion({
       env: { GEMINI_API_KEY: "fake" },
-      parsedAiResponse: { ...candidate, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: { ...candidate.visibleEvidence, heading: EXPECTED_BIEREMA_HEADING } },
+      parsedAiResponse: { ...BIEREMA_CORE, ...candidate, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: { ...BIEREMA_CORE, ...candidate.visibleEvidence, heading: EXPECTED_BIEREMA_HEADING } },
     });
     assert.equal(result.downloadVolume, null, JSON.stringify(candidate));
     assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);

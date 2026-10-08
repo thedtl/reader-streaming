@@ -23,33 +23,34 @@ export async function handleSuggestHeading(request, env, helpers) {
     }, request, env);
   }
 
-  if (env.GEMINI_API_KEY) {
-    const suggestion = await suggestHeadingWithGemini(lines, images, { sourceAuthorHint, sourceTitleHint }, env).catch(error => {
-      console.warn("Gemini heading suggestion failed", {
-        message: error.message || String(error),
-      });
-      return null;
-    });
-
-    if (suggestion?.heading) {
-      return helpers.json({
-        ...suggestion,
-        source: "ai",
-        note: "Review before generating links.",
-      }, request, env);
-    }
+  if (!env.GEMINI_API_KEY) {
+    return helpers.json({
+      heading: "", downloadVolume: null, source: "unavailable",
+      note: "The metadata reader is not configured. Enter the citation manually; chapter links can still be generated.",
+    }, request, env);
   }
 
-  return helpers.json({
-    heading: buildHeadingSuggestion(lines),
-    downloadVolume: null,
-    source: "heuristic",
-    note: env.GEMINI_API_KEY
-      ? "AI did not return a usable heading, so the Worker used the local fallback."
-      : images.length > 0
-        ? "This PDF may be scanned. Add a GEMINI_API_KEY Worker secret to read title-page images."
-        : "No AI key is configured, so the Worker used the local fallback.",
-  }, request, env);
+  try {
+    const suggestion = await suggestHeadingWithGemini(lines, images, { sourceAuthorHint, sourceTitleHint }, env);
+    return helpers.json({
+      ...suggestion,
+      source: suggestion.heading ? "ai" : "none",
+      note: suggestion.heading
+        ? "Read from the supplied pages. Please review the citation."
+        : "The scan could not establish a title and contributor. Enter the citation manually; chapter links can still be generated.",
+    }, request, env);
+  } catch (error) {
+    // Fetch exceptions may include a URL bearing the API key. Log only safe
+    // diagnostic fields, never provider bodies or the exception's raw message.
+    console.warn("Gemini heading suggestion failed", {
+      name: error.name, status: error.status || null,
+      finishReason: error.finishReason || null,
+    });
+    return helpers.json({
+      heading: "", downloadVolume: null, source: "unavailable",
+      note: "The metadata scan failed. Try the scan again or enter the citation manually; chapter links can still be generated.",
+    }, request, env);
+  }
 }
 
 function normalizeHeadingLines(rawLines) {
@@ -144,7 +145,8 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "Do not split a single stacked title block into title plus series just because it contains a volume line. If the title page presents 'Lexham Geographic Commentary / on the Historical Books / Volume 2: 1 Samuel-Esther', cite that title block as 'Lexham Geographic Commentary on the Historical Books: Volume 2, 1 Samuel-Esther'.",
     "For a personal author shown as First Name Last Name, invert the author in the final bibliography heading as Last Name, First Name.",
     "For non-Latin-script personal authors, do not invert the original-script name. Keep the original-script name in visible order and add a romanized Latin-script form in square brackets, for example: 박성덕 [Park Sung-deok].",
-    "For scanned non-Latin sources, trust the page image over OCR-like text when they conflict. Visually distinguish similar glyphs before filling names or publishers.",
+    "For every script, the rendered page image is primary; the selectable PDF text below is unverified and may be badly corrupted OCR. Read the visible title page and imprint, not just the cover or text excerpts. Never copy a garbled text-layer spelling over clearly visible image text. If the image is unreadable, leave the field blank rather than guessing.",
+    "Read the complete title block across stacked lines, including its subtitle. Distinguish an honoree or dedication from the book's authors/editors. Read names together with their visible responsibility labels; 'Edited by' is not a person's name.",
     "Use the author name exactly as it appears on the title page. Do not expand, correct, or formalize it from copyright text; for example, if the title page says Tim Arnold and the copyright page says Timothy Arnold, use Tim Arnold.",
     "For non-Latin-script contributor names or titles, keep the visible non-Latin text first. If a visible English or Latin-script equivalent is also present, add it immediately after in square brackets, for example: 해돈 W. 로빈슨 [Haddon W. Robinson]. 성경 강해설교 강해설교 전개와 전달 [Biblical Preaching The Development and Delivery of Expository Messages].",
     "For non-Latin-script contributor names, include only a romanized contributor name in square brackets. Do not use a translated title, filename, URL slug, MMS ID, or other source identifier as the bracketed contributor form.",
@@ -169,6 +171,7 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "Separately, fill multiVolumeWorkTitle and workVolume only when this is a numbered volume of the same multi-volume work under a common collective title. A publisher's academic series containing distinct books is not a multi-volume work, even when its books have series numbers; leave both fields blank for such series or an uncertain relationship. Keep ordinary series details in the citation fields above.",
     "multiVolumeWorkTitle is the visibly stated common work title; workVolume is this volume's complete observed designation, preserving its language and numeral form. Copy both verbatim apart from whitespace, with the exact supporting words in the same visibleEvidence fields. Do not infer either from filenames, hints, order, or a bare series number. Leave both blank if either is not visible. These download fields do not replace or shorten the full bibliographic heading.",
     "Look for publication facts on copyright/title-page verso pages and final imprint/copyright pages: publisher name, publication place, and publication year.",
+    "Use the copyright/publication statement for this book, not the copyright year of quoted scripture, licensed translations, illustrations, or other reproduced material. Read the full statement to identify whose date it is; do not select a year merely because it is the first, last, or largest number. A street address or postal district is not a person's name or part of the publication city.",
     "If a page lists both an original or first-publication date and a later printing or edition date, use the later visible printing/edition date for this scanned copy.",
     "Include a visible publication place when clearly identified in the front matter.",
     "When city, publisher, and year are clearly visible, the entry should end with City: Publisher, Year.",
@@ -185,7 +188,7 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "",
     sourceAuthorHint ? `Filename/author hint for bracketed contributor form only: ${sourceAuthorHint}` : "",
     sourceTitleHint ? `Filename/title hint for bracketed English title only: ${sourceTitleHint}` : "",
-    excerpts || "No selectable text was extracted. Read the attached front-matter page images.",
+    excerpts ? `Unverified selectable text (may contain OCR errors):\n${excerpts}` : "No selectable text was extracted. Read the attached front-matter page images.",
   ].join("\n");
 
   const parts = [{ text: prompt }];
@@ -220,16 +223,25 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
 
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`Gemini heading suggestion failed: ${text.slice(0, 300)}`);
+    throw Object.assign(new Error("Metadata provider request failed"), { status: response.status });
   }
 
   const data = JSON.parse(text || "{}");
-  const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const candidate = data.candidates?.[0];
+  if (candidate?.finishReason !== "STOP") {
+    throw Object.assign(new Error("Metadata response did not complete"), {
+      finishReason: candidate?.finishReason || null,
+    });
+  }
+  const responseText = (candidate?.content?.parts || [])
+    .filter(part => !part.thought && typeof part.text === "string")
+    .map(part => part.text).join("");
   const parsed = JSON.parse(responseText || "{}");
   logAiCitationSummary(parsed);
+  const heading = buildAiCitation(parsed, hints);
   return {
-    heading: buildAiCitation(parsed, lines, hints),
-    downloadVolume: buildDownloadVolume(parsed),
+    heading,
+    downloadVolume: heading ? buildDownloadVolume(parsed) : null,
   };
 }
 
@@ -276,33 +288,29 @@ function compactLogValue(value) {
   return cleaned.length > 180 ? `${cleaned.slice(0, 177)}...` : cleaned;
 }
 
-function buildAiCitation(parsed, lines = [], hints = {}) {
+function buildAiCitation(parsed, hints = {}) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
   const { sourceAuthorHint = "", sourceTitleHint = "" } = hints || {};
   const evidence = normalizeEvidenceMap(parsed.visibleEvidence || parsed.evidence || {});
-  const lineFields = extractLineCitationFields(lines);
+  const supportedContributor = supportedAiField(parsed, evidence, "contributor");
+  const supportedTitle = supportedAiField(parsed, evidence, "title");
+  // Missing or misassigned core fields need review, never reconstruction from
+  // the PDF's hidden OCR layer. In particular an edition is not a book title.
+  if (!supportedContributor || !supportedTitle || looksLikeEditionLine(supportedTitle)) return "";
   const publicationFields = extractSupportedPublicationFields(parsed, evidence);
   const fallbackHeading = normalizeAiCitationText(
     reconcileAiHeadingPublication(supportedAiHeading(parsed, evidence), publicationFields)
   );
 
   if (fallbackHeading) {
-    if (
-      hasCoreCitationFields(lineFields) &&
-      !headingIncludesExtractedCore(fallbackHeading, lineFields) &&
-      !shouldTrustEditedBookAiHeading(fallbackHeading, evidence) &&
-      !shouldTrustSupportedAiHeading(fallbackHeading, parsed, evidence)
-    ) {
-      return buildCitationFromExtractedFields(lineFields);
-    }
     return cleanCitationText(fallbackHeading);
   }
 
-  const aiContributor = normalizeContributorField(
-    normalizeContributorFromEvidence(supportedAiField(parsed, evidence, "contributor"), evidence.contributor),
+  const contributor = normalizeContributorField(
+    normalizeContributorFromEvidence(supportedContributor, evidence.contributor),
     sourceAuthorHint
   );
-  let contributor = preferTitlePageContributor(aiContributor, lines);
-  let title = normalizeTitleField(supportedAiField(parsed, evidence, "title"), sourceTitleHint);
+  const title = normalizeTitleField(supportedTitle, sourceTitleHint);
   const responsibilityEvidence = evidence.responsibilityStatement || evidence.responsibility || "";
   const responsibilityStatement = normalizeResponsibilityStatement(
     supportedAiField(parsed, evidence, "responsibilityStatement", ["responsibility"]),
@@ -310,12 +318,8 @@ function buildAiCitation(parsed, lines = [], hints = {}) {
   );
   const series = stripNonTitleLatinBracketedEquivalents(supportedAiField(parsed, evidence, "series"));
   const seriesNumber = supportedAiField(parsed, evidence, "seriesNumber");
-  let edition = normalizeEditionStatement(supportedAiField(parsed, evidence, "edition"));
+  const edition = normalizeEditionStatement(supportedAiField(parsed, evidence, "edition"));
   const { city, publisher, year } = publicationFields;
-
-  if (shouldPreferExtractedCitationOverAi({ aiContributor, title, edition }, lineFields)) {
-    return buildCitationFromExtractedFields(lineFields);
-  }
 
   const parts = [];
   if (contributor) {
@@ -344,69 +348,6 @@ function buildAiCitation(parsed, lines = [], hints = {}) {
   }
 
   return normalizeAiCitationText(citation);
-}
-
-function shouldPreferExtractedCitationOverAi(fields, lineFields) {
-  if (!hasCoreCitationFields(lineFields)) {
-    return false;
-  }
-
-  if (!fields.title) {
-    return true;
-  }
-
-  if (fields.title && looksLikeEditionLine(fields.title)) {
-    return true;
-  }
-
-  if (fields.aiContributor && titleContainsText(lineFields.title, fields.aiContributor)) {
-    return true;
-  }
-
-  return false;
-}
-
-function hasCoreCitationFields(fields) {
-  return Boolean(fields.contributor && fields.title);
-}
-
-function headingIncludesExtractedCore(heading, lineFields) {
-  return headingIncludesTitle(heading, lineFields.title) &&
-    headingIncludesContributor(heading, lineFields.contributor);
-}
-
-function headingIncludesTitle(heading, title) {
-  const headingKey = normalizeTitleComparison(heading);
-  const titleKey = normalizeTitleComparison(title);
-  return Boolean(headingKey && titleKey && headingKey.includes(titleKey));
-}
-
-function headingIncludesContributor(heading, contributor) {
-  const headingKey = normalizeTitleComparison(heading);
-  const lastNames = splitAuthorNames(contributor)
-    .map(name => comparableLastName(name))
-    .filter(Boolean);
-
-  if (lastNames.length === 0) {
-    return false;
-  }
-
-  return lastNames.every(lastName => headingKey.includes(lastName));
-}
-
-function titleContainsText(title, text) {
-  const titleKey = normalizeTitleComparison(title);
-  const textKey = normalizeTitleComparison(text);
-  return Boolean(titleKey && textKey && titleKey.includes(textKey));
-}
-
-function normalizeTitleComparison(text) {
-  return cleanCitationText(text)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .toLocaleLowerCase("en")
-    .trim();
 }
 
 function supportedAiField(parsed, evidence, key, aliases = []) {
@@ -451,30 +392,6 @@ function hasHeadingFieldEvidence(evidence) {
     evidence.publisher ||
     evidence.year
   );
-}
-
-function shouldTrustEditedBookAiHeading(heading, evidence) {
-  const cleanedHeading = cleanCitationText(heading);
-  const contributorEvidence = cleanCitationText(evidence.contributor || evidence.responsibilityStatement || evidence.responsibility || "");
-  if (!/,\s*eds?\./i.test(cleanedHeading)) {
-    return false;
-  }
-
-  return /\b(?:edited by|edited and introduced by|general editor|series editor)\b/i.test(contributorEvidence) ||
-    /\b(?:ouvrage\s+[ée]dit[ée]\s+par|texte\s+[ée]tabli\s+par)\b/iu.test(contributorEvidence);
-}
-
-function shouldTrustSupportedAiHeading(heading, parsed, evidence) {
-  const aiContributor = cleanCitationText(parsed.contributor || "");
-  const aiTitle = cleanCitationText(parsed.title || "");
-  if (!aiContributor || !aiTitle || !evidence.contributor || !evidence.title) {
-    return false;
-  }
-  if (!headingIncludesContributor(heading, aiContributor) || !headingIncludesTitle(heading, aiTitle)) {
-    return false;
-  }
-
-  return Boolean(evidence.publisher || evidence.year || evidence.city || evidence.edition || evidence.heading);
 }
 
 function extractSupportedPublicationFields(parsed, evidence) {
@@ -620,11 +537,6 @@ function punctuateAuthorList(text) {
   return /[.!?]$/.test(cleaned) ? cleaned : cleaned + ".";
 }
 
-function punctuateCitationPart(text) {
-  const cleaned = cleanCitationText(text);
-  return /[.!?]$/.test(cleaned) ? cleaned : cleaned + ".";
-}
-
 function formatCitationTitle(title) {
   const cleaned = moveTrailingNonLatinTitleTranslationIntoBrackets(
     mergeSplitNonLatinTitleTranslations(trimTerminalPeriod(title))
@@ -687,66 +599,6 @@ function looksLikeRomanizedTitle(text) {
 
   return words.some(word => /^(?:wa|gwa|ui)$/i.test(word)) ||
     /\b[a-z]*(?:yeo|yeong|eong|eon|eo|eu|ae|oe|ui|jeok|jido|mokhoe|ganghae|seolgyo)[a-z]*\b/i.test(cleaned);
-}
-
-function preferTitlePageContributor(aiContributor, lines) {
-  const titlePageAuthor = findTitlePageAuthor(lines);
-  if (!titlePageAuthor) {
-    return aiContributor;
-  }
-
-  if (!aiContributor) {
-    return titlePageAuthor;
-  }
-
-  if (sameNormalizedName(aiContributor, titlePageAuthor)) {
-    return aiContributor;
-  }
-
-  if (sameLastName(aiContributor, titlePageAuthor)) {
-    return titlePageAuthor;
-  }
-
-  return aiContributor;
-}
-
-function findTitlePageAuthor(lines) {
-  const candidates = lines.filter(line => isUsefulFrontMatterLine(line.text));
-  const title = chooseTitleLine(candidates);
-  const author = title ? chooseAuthorLine(candidates, title.index) : "";
-  return author ? normalizeContributorName(author) : "";
-}
-
-function sameNormalizedName(a, b) {
-  return normalizeNameForComparison(a) === normalizeNameForComparison(b);
-}
-
-function sameLastName(a, b) {
-  const aLast = comparableLastName(a);
-  const bLast = comparableLastName(b);
-  return aLast && bLast && aLast === bLast;
-}
-
-function comparableLastName(name) {
-  const cleaned = cleanAuthorLine(name);
-  if (!cleaned) return "";
-
-  if (cleaned.includes(",")) {
-    return normalizeNameForComparison(cleaned.split(",")[0]);
-  }
-
-  const parts = normalizeNameForComparison(cleaned).split(" ").filter(Boolean);
-  return parts.length >= 2 ? parts[parts.length - 1] : "";
-}
-
-function normalizeNameForComparison(name) {
-  return cleanAuthorLine(name)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\p{L}\s-]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .toLocaleLowerCase("en")
-    .trim();
 }
 
 function formatChicagoBibliographyAuthors(author) {
@@ -834,16 +686,6 @@ function looksLikeSurnamePiece(text) {
   return words.slice(0, -1).every(word => /^\p{Ll}/u.test(word)) && /^\p{Lu}/u.test(words[words.length - 1]);
 }
 
-function looksLikePersonalName(name) {
-  const cleaned = cleanAuthorLine(name);
-  if (!cleaned || /[0-9;:]/.test(cleaned)) return false;
-  const words = cleaned.replace(/,/g, " ").split(/\s+/).filter(Boolean);
-  if (words.length < 2 || words.length > 5) return false;
-  const nameWords = words.filter(word => /^(\p{Lu}[\p{L}'’-]*\.?|[A-Z]\.)$/u.test(word) || /^\p{Ll}{1,3}$/u.test(word));
-  const capitalizedWords = words.filter(word => /^(\p{Lu}[\p{L}'’-]*\.?|[A-Z]\.)$/u.test(word));
-  return nameWords.length === words.length && capitalizedWords.length >= 2;
-}
-
 function invertPersonalName(name) {
   const cleaned = trimAuthorName(name);
   if (!cleaned) return "";
@@ -887,454 +729,6 @@ function containsNonLatinScript(text) {
     /[^\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]/u.test(cleaned);
 }
 
-function extractLineCitationFields(lines) {
-  const titlePageFields = extractTitlePageCitationFields(lines);
-  const catalogFields = extractCatalogCitationFields(lines);
-
-  if (shouldPreferCatalogCitationFields(titlePageFields, catalogFields)) {
-    return preferCitationFields(catalogFields, titlePageFields);
-  }
-
-  return titlePageFields;
-}
-
-function extractTitlePageCitationFields(lines) {
-  const candidates = lines.filter(line => isUsefulFrontMatterLine(line.text));
-  const title = chooseTitleLine(candidates);
-  const author = title ? chooseAuthorLine(candidates, title.index) : "";
-  const responsibility = title ? chooseResponsibilityStatement(candidates, title.index) : "";
-  const series = title ? chooseSeriesStatement(candidates, title.index) : "";
-  const edition = title ? chooseEditionStatement(candidates, title.index) : "";
-  const publication = choosePublicationStatement(lines);
-  const titleText = title ? collectTitleText(lines, title) : "";
-
-  return {
-    contributor: author,
-    title: titleText,
-    responsibility,
-    series,
-    edition,
-    publication,
-    fallback: title?.text || lines[0]?.text || "",
-  };
-}
-
-function extractCatalogCitationFields(lines) {
-  const cleanLines = lines
-    .map(line => cleanFrontMatterLine(line.text))
-    .filter(Boolean);
-  const titleIndex = cleanLines.findIndex(line => /^title\s*:/i.test(line));
-  if (titleIndex < 0) {
-    return emptyCitationFields();
-  }
-
-  const titleParts = [cleanLines[titleIndex].replace(/^title\s*:\s*/i, "")];
-  for (const line of cleanLines.slice(titleIndex + 1, titleIndex + 5)) {
-    if (isCatalogControlLine(line)) break;
-    titleParts.push(line);
-  }
-
-  const titleStatement = cleanCitationText(titleParts.join(" "));
-  const [rawTitle, rawContributor = ""] = titleStatement.split(/\s+\/\s+/, 2);
-  if (!rawTitle) {
-    return emptyCitationFields();
-  }
-
-  const description = cleanLines.find(line => /^description\s*:/i.test(line)) || "";
-  const edition = extractEditionFromCatalogDescription(description);
-
-  return {
-    contributor: cleanAuthorLine(rawContributor.replace(/\s*\|.*$/g, "").replace(/[.;:]+$/g, "")),
-    title: formatCatalogTitle(rawTitle.replace(/\s+:\s+/g, ": ")),
-    responsibility: "",
-    series: "",
-    edition,
-    publication: choosePublicationStatement(lines),
-    fallback: titleStatement,
-  };
-}
-
-function emptyCitationFields() {
-  return {
-    contributor: "",
-    title: "",
-    responsibility: "",
-    series: "",
-    edition: "",
-    publication: "",
-    fallback: "",
-  };
-}
-
-function shouldPreferCatalogCitationFields(titlePageFields, catalogFields) {
-  if (!catalogFields.title) {
-    return false;
-  }
-
-  if (!titlePageFields.title) {
-    return true;
-  }
-
-  if (looksLikeCatalogControlLine(titlePageFields.title) || looksLikePublisherLine(titlePageFields.title)) {
-    return true;
-  }
-
-  return titlePageFields.contributor && titleContainsText(catalogFields.title, titlePageFields.contributor);
-}
-
-function preferCitationFields(preferred, fallback) {
-  return {
-    contributor: preferred.contributor || fallback.contributor,
-    title: preferred.title || fallback.title,
-    responsibility: preferred.responsibility || fallback.responsibility,
-    series: preferred.series || fallback.series,
-    edition: preferred.edition || fallback.edition,
-    publication: preferred.publication || fallback.publication,
-    fallback: preferred.fallback || fallback.fallback,
-  };
-}
-
-function extractEditionFromCatalogDescription(description) {
-  const match = cleanFrontMatterLine(description)
-    .replace(/^description\s*:\s*/i, "")
-    .match(/\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?)\s+edition\b/i);
-  return match ? sentenceCaseText(match[0]) : "";
-}
-
-function formatCatalogTitle(text) {
-  const smallWords = new Set(["a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "nor", "of", "on", "or", "the", "to", "with"]);
-  let capitalizeNext = true;
-  return cleanCitationText(text)
-    .toLocaleLowerCase("en")
-    .replace(/\b[\p{L}'’-]+\b/gu, (word, offset, source) => {
-      const lower = word.toLocaleLowerCase("en");
-      const replacement = capitalizeNext || !smallWords.has(lower)
-        ? lower.charAt(0).toLocaleUpperCase("en") + lower.slice(1)
-        : lower;
-      const after = source.slice(offset + word.length).trimStart();
-      capitalizeNext = /^[:.!?]/.test(after);
-      return replacement;
-    });
-}
-
-function isCatalogControlLine(text) {
-  return /^(names|title|description|identifiers|subjects|classification|lc\s+record|cover\s+(design|art))\s*:/i.test(cleanFrontMatterLine(text));
-}
-
-function looksLikeCatalogControlLine(text) {
-  const cleaned = cleanFrontMatterLine(text);
-  return /^published\b/i.test(cleaned) || isCatalogControlLine(cleaned);
-}
-
-function buildHeadingSuggestion(lines) {
-  return buildCitationFromExtractedFields(extractLineCitationFields(lines));
-}
-
-function buildCitationFromExtractedFields(fields) {
-  const parts = [];
-  if (fields.contributor) {
-    parts.push(formatChicagoBibliographyAuthors(fields.contributor));
-  }
-  if (fields.title) {
-    parts.push(fields.title);
-  }
-  if (fields.responsibility) {
-    parts.push(fields.responsibility);
-  }
-  if (fields.series) {
-    parts.push(fields.series);
-  }
-  if (fields.edition) {
-    parts.push(fields.edition);
-  }
-  if (fields.publication) {
-    parts.push(fields.publication);
-  }
-
-  if (parts.length > 0) {
-    return cleanCitationText(parts.map(punctuateCitationPart).join(" "));
-  }
-
-  return cleanCitationText(fields.fallback || "");
-}
-
-function chooseTitleLine(lines) {
-  const maxFontSize = Math.max(...lines.map(line => line.fontSize || 0));
-  const scored = lines.map(line => ({
-    ...line,
-    score: scoreTitleCandidate(line, maxFontSize),
-  }));
-
-  scored.sort((a, b) => b.score - a.score);
-  return scored[0] && scored[0].score > 0 ? scored[0] : null;
-}
-
-function collectTitleText(lines, title) {
-  const titleLines = [title];
-  collectAdjacentTitleLines(lines, title, -1)
-    .reverse()
-    .forEach(line => titleLines.unshift(line));
-  collectAdjacentTitleLines(lines, title, 1)
-    .forEach(line => titleLines.push(line));
-
-  const subtitleIndex = titleLines.findIndex((line, index) => index > 0 && looksLikeSubtitleLine(line.text));
-  if (subtitleIndex > 0) {
-    const mainTitle = formatCitationTitle(titleLines.slice(0, subtitleIndex).map(line => line.text).join(" "));
-    const subtitle = formatCitationTitle(titleLines.slice(subtitleIndex).map(line => line.text).join(" "));
-    return cleanCitationText(`${mainTitle}: ${subtitle}`);
-  }
-
-  return formatCitationTitle(titleLines.map(line => line.text).join(" "));
-}
-
-function collectAdjacentTitleLines(lines, title, direction) {
-  const titleLines = [];
-  let nextIndex = title.index + direction;
-
-  while (titleLines.length < 3) {
-    const next = lines.find(line => line.index === nextIndex);
-    if (!next || !isTitleContinuationLine(next, title, direction)) {
-      break;
-    }
-
-    titleLines.push(next);
-    nextIndex += direction;
-  }
-
-  return titleLines;
-}
-
-function isTitleContinuationLine(line, title, direction = 1) {
-  const text = cleanFrontMatterLine(line.text);
-  const wordCount = text.split(/\s+/).length;
-  if (!text || wordCount > 9) return false;
-  if (line.pageNumber !== title.pageNumber) return false;
-  if (title.fontSize && line.fontSize && line.fontSize < title.fontSize * 0.72) {
-    if (!(direction > 0 && line.fontSize >= title.fontSize * 0.45 && looksLikeSubtitleLine(text))) {
-      return false;
-    }
-  }
-  if (/^(by|par)$/i.test(text)) return false;
-  if (looksLikeSeriesLine(text)) return false;
-  if (looksLikeEditionLine(text)) return false;
-  if (looksLikeResponsibilityRoleLine(text)) return false;
-  if (looksLikeSubtitleLine(text)) return true;
-  if (looksLikeAuthorLine(text) && !(isMostlyAllCaps(text) && title.fontSize && line.fontSize >= title.fontSize * 0.72)) return false;
-  return scoreTitleCandidate(line) > 0;
-}
-
-function chooseAuthorLine(lines, titleIndex) {
-  const title = lines.find(line => line.index === titleIndex);
-  const titleLineIndexes = getTitleLineIndexes(lines, title);
-  const authorBeforeTitle = lines
-    .filter(line => (
-      line.index < titleIndex &&
-      line.index >= titleIndex - 6 &&
-      !titleLineIndexes.has(line.index) &&
-      looksLikeAuthorLine(line.text) &&
-      !looksLikeSeriesLine(line.text)
-    ))
-    .sort((a, b) => b.index - a.index);
-
-  if (authorBeforeTitle.length > 0) {
-    return collectAuthorText(lines, authorBeforeTitle[0]);
-  }
-
-  const authorWindow = lines.filter(line => (
-    line.index > titleIndex &&
-    line.index <= titleIndex + 6 &&
-    !titleLineIndexes.has(line.index) &&
-    looksLikeAuthorLine(line.text)
-  ));
-
-  return authorWindow.length ? collectAuthorText(lines, authorWindow[0]) : "";
-}
-
-function getTitleLineIndexes(lines, title) {
-  if (!title) return new Set();
-  return new Set([
-    title.index,
-    ...collectAdjacentTitleLines(lines, title, -1).map(line => line.index),
-    ...collectAdjacentTitleLines(lines, title, 1).map(line => line.index),
-  ]);
-}
-
-function collectAuthorText(lines, firstAuthorLine) {
-  const authorLines = [firstAuthorLine];
-  let nextIndex = firstAuthorLine.index + 1;
-
-  while (authorLines.length < 4) {
-    const next = lines.find(line => line.index === nextIndex);
-    if (!next || !looksLikeAuthorLine(next.text)) break;
-    authorLines.push(next);
-    nextIndex += 1;
-  }
-
-  return cleanAuthorLine(authorLines.map(line => trimTerminalPeriod(line.text)).join(", "));
-}
-
-function chooseResponsibilityStatement(lines, titleIndex) {
-  const window = lines.filter(line => (
-    line.index > titleIndex &&
-    line.index <= titleIndex + 18
-  ));
-
-  const direct = window.find(line => looksLikeDirectResponsibilityLine(line.text));
-  if (direct) {
-    return normalizeResponsibilityStatement(direct.text);
-  }
-
-  const byIndex = window.findIndex(line => /^(by|par)$/i.test(cleanFrontMatterLine(line.text)));
-  if (byIndex <= 0 || byIndex >= window.length - 1) {
-    return "";
-  }
-
-  const roleLines = window
-    .slice(Math.max(0, byIndex - 6), byIndex)
-    .filter(line => looksLikeResponsibilityRoleLine(line.text))
-    .map(line => line.text);
-  const name = normalizeContributorName(window[byIndex + 1].text);
-
-  if (roleLines.length === 0 || !looksLikeContributorName(name)) {
-    return "";
-  }
-
-  const connector = /^par$/i.test(cleanFrontMatterLine(window[byIndex].text)) ? "par" : "by";
-  return cleanCitationText(`${formatResponsibilityRoles(roleLines)} ${connector} ${name}`);
-}
-
-function chooseSeriesStatement(lines, titleIndex) {
-  const window = lines.filter(line => (
-    line.index >= titleIndex - 8 &&
-    line.index <= titleIndex + 8 &&
-    looksLikeSeriesLine(line.text)
-  ));
-  if (window.length === 0) return "";
-
-  const seriesLine = window.find(line => /\bseries\b|sources?\s+chr[ée]tiennes?/i.test(line.text));
-  const numberLine = window.find(line => /^(volume|vol\.?|n[°o]|no\.?)\b/i.test(cleanFrontMatterLine(line.text)));
-
-  if (seriesLine && numberLine && seriesLine !== numberLine) {
-    return cleanCitationText(`${formatSeriesLine(seriesLine.text)}, ${formatSeriesLine(numberLine.text)}`);
-  }
-
-  return formatSeriesLine((seriesLine || numberLine || window[0]).text);
-}
-
-function chooseEditionStatement(lines, titleIndex) {
-  const edition = lines.find(line => (
-    line.index > titleIndex &&
-    line.index <= titleIndex + 10 &&
-    looksLikeEditionLine(line.text)
-  ));
-  return edition ? sentenceCaseText(edition.text) : "";
-}
-
-function formatSeriesLine(text) {
-  const cleaned = cleanFrontMatterLine(text)
-    .replace(/^n[°o]\s*/i, "")
-    .replace(/^no\.?\s*/i, "")
-    .replace(/^volume\s+/i, "volume ")
-    .replace(/^vol\.?\s+/i, "volume ");
-  return /^volume\b/i.test(cleaned) || /^\d+$/.test(cleaned)
-    ? cleaned.toLocaleLowerCase("en")
-    : formatCitationTitle(cleaned);
-}
-
-function choosePublicationStatement(lines) {
-  const publisherInfo = findPublisherInfo(lines);
-  const year = findPublicationYear(lines);
-  return buildPublicationBlock(publisherInfo.city, publisherInfo.publisher, year);
-}
-
-function findPublicationYear(lines) {
-  const yearLine = lines.find(line => /\b(copyright|first printing|published|publication|édition|impression)\b/i.test(line.text) && extractYear(line.text)) ||
-    lines.find(line => extractYear(line.text));
-  return yearLine ? extractYear(yearLine.text) : "";
-}
-
-function extractYear(text) {
-  const match = String(text || "").match(/\b(1[5-9]\d{2}|20\d{2})\b/);
-  return match ? match[1] : "";
-}
-
-function findPublisherInfo(lines) {
-  let best = { publisher: "", city: "", score: 0 };
-  for (const line of lines) {
-    const info = parsePublisherLine(line.text);
-    if (info.publisher) {
-      if (!info.city) {
-        const nearbyPlace = lines
-          .filter(candidate => candidate.index > line.index && candidate.index <= line.index + 4)
-          .map(candidate => findPlaceInText(candidate.text))
-          .find(Boolean);
-        info.city = nearbyPlace || "";
-      }
-      const score = scorePublisherInfo(info, line.text);
-      if (score > best.score) {
-        best = { ...info, score };
-      }
-    }
-  }
-  return { publisher: best.publisher, city: best.city };
-}
-
-function scorePublisherInfo(info, sourceText) {
-  let score = 1;
-  if (info.city) score += 3;
-  if (/\b(published by|éditions?|press|publisher|publishing|inc\.?|co\.?|company|sarl|sons?|wiley|jossey|bass|guilford|cerf)\b/i.test(sourceText)) score += 2;
-  if (/\b(copyright|©)\b/i.test(sourceText)) score += 1;
-  if (info.publisher.length > 8) score += 1;
-  return score;
-}
-
-function parsePublisherLine(text) {
-  let cleaned = cleanFrontMatterLine(text);
-  if (!cleaned) return { publisher: "", city: "" };
-
-  const publishedBy = cleaned.match(/^published by\s+(.+)$/i);
-  if (publishedBy) cleaned = publishedBy[1];
-
-  cleaned = cleaned
-    .replace(/^copyright\s*©?\s*(?:\d{4}\s*)?(?:by\s+)?/i, "")
-    .replace(/\b\d{4}\b/g, "")
-    .replace(/\ball rights reserved\b/ig, "")
-    .replace(/\btous droits réservés\b/ig, "")
-    .trim();
-
-  if (!looksLikePublisherLine(cleaned)) return { publisher: "", city: "" };
-
-  const dashParts = cleaned.split(/\s+[–-]\s+/).map(part => cleanFrontMatterLine(part)).filter(Boolean);
-  if (dashParts.length > 1) {
-    return {
-      publisher: normalizePublisherName(dashParts[0]),
-      city: findPlaceInText(dashParts.slice(1).join(", ")),
-    };
-  }
-
-  const commaParts = cleaned.split(/\s*,\s*/).map(part => cleanFrontMatterLine(part)).filter(Boolean);
-  if (/^published by/i.test(text) && commaParts.length > 1) {
-    const publisherPartCount = commaParts.length >= 3 && /\b(inc\.?|co\.?|company|sons?)$/i.test(commaParts[1]) ? 2 : 1;
-    return {
-      publisher: normalizePublisherName(commaParts.slice(0, publisherPartCount).join(", ")),
-      city: findPlaceInText(commaParts.slice(publisherPartCount).join(", ")),
-    };
-  }
-
-  return {
-    publisher: normalizePublisherName(cleaned),
-    city: findPlaceInText(cleaned),
-  };
-}
-
-function looksLikePublisherLine(text) {
-  const cleaned = cleanFrontMatterLine(text);
-  if (!cleaned || looksLikeResponsibilityRoleLine(cleaned)) return false;
-  if (looksLikeNonPublisherCredit(cleaned)) return false;
-  if (/^(?:발행처|출판사|펴낸곳|펴낸 곳|출판|발행)\s*[:：]?/u.test(cleaned)) return true;
-  return /\b(press|publisher|publishers|publishing|university|college|éditions?|editiones|books?|inc\.?|co\.?|company|sarl|sons?|wiley|jossey|bass|guilford|excelsis|leaders for leaders|hana medical|cerf)\b/i.test(cleaned);
-}
-
 function normalizePublisherName(text) {
   let cleaned = cleanFrontMatterLine(text);
   const labeledPublisher = cleaned
@@ -1362,100 +756,9 @@ function looksLikeNonPublisherCredit(text) {
     /(?:꾸밈|디자인|표지\s*디자인)\s*[:：]/u.test(cleaned);
 }
 
-function findPlaceInText(text) {
-  const cleaned = cleanFrontMatterLine(text).replace(/\b[A-Z]\d[A-Z]\s*\d[A-Z]\d\b/ig, "");
-  const koreanPlace = cleaned.match(/(?:^|[\s,;:])((?:서울|서울시|부산|부산시|대구|대구시|인천|인천시|광주|광주시|대전|대전시|울산|울산시|세종|세종시|제주|제주시|[가-힣]{2,}(?:시|도|군)))(?=$|[\s,;:])/u);
-  if (koreanPlace) return koreanPlace[1];
-  const matches = [...cleaned.matchAll(/\b([\p{Lu}][\p{L}' .-]+,\s*(?:[A-Z]{2}|[\p{Lu}][\p{L}' .-]+|France|Korea|New Jersey))\b/gu)];
-  for (const match of matches.reverse()) {
-    const place = cleanFrontMatterLine(match[1]).replace(/[.,;:]+$/g, "");
-    if (!/\b(inc|co|company|sons?|press|publisher|publishing|wiley|jossey|bass)\b/i.test(place)) {
-      return place;
-    }
-  }
-  return "";
-}
-
-function scoreTitleCandidate(line, maxFontSize = 0) {
-  const text = line.text;
-  const wordCount = text.split(/\s+/).length;
-  let score = 0;
-
-  if (line.pageNumber <= 3) score += 4;
-  if (wordCount >= 2 && wordCount <= 14) score += 4;
-  if (line.fontSize >= 12) score += 2;
-  if (maxFontSize && line.fontSize && line.fontSize < maxFontSize * 0.72) score -= 5;
-  if (maxFontSize && line.fontSize && line.fontSize >= maxFontSize * 0.9) score += 3;
-  if (/^[A-Z0-9][A-Za-z0-9'":;,.& -]+$/.test(text)) score += 2;
-  if (/[a-z]/.test(text) && /[A-Z]/.test(text)) score += 1;
-  if (/^(edited by|translated by|by|chapter|contents|table of contents)\b/i.test(text)) score -= 5;
-  if (/^(by|par)$/i.test(text)) score -= 8;
-  if (looksLikeSeriesLine(text)) score -= 7;
-  if (looksLikeEditionLine(text)) score -= 7;
-  if (looksLikeResponsibilityRoleLine(text)) score -= 8;
-  if (looksLikePublisherLine(text)) score -= 8;
-  if (/^a\s+\w+\s+brand$/i.test(cleanFrontMatterLine(text))) score -= 8;
-  if (looksLikeAuthorLine(text) && !(isMostlyAllCaps(text) && maxFontSize && line.fontSize >= maxFontSize * 0.9)) score -= 5;
-  if (isMostlyAllCaps(text) && wordCount <= 3) score -= 1;
-
-  return score;
-}
-
-function looksLikeAuthorLine(text) {
-  const cleaned = cleanAuthorLine(text);
-  if (!cleaned) return false;
-  if (/^(edited|translated|compiled|introduction|foreword|preface)\b/i.test(cleaned)) return false;
-  if (looksLikeSeriesLine(cleaned)) return false;
-  if (looksLikeEditionLine(cleaned)) return false;
-
-  const words = cleaned.split(/\s+/);
-  if (words.length < 2 || words.length > 8) return false;
-  if (/^(a|an|and|for|in|of|on|or|the|to|with)\b/i.test(cleaned)) return false;
-  if (/[0-9]/.test(cleaned)) return false;
-  if (/[;:]/.test(cleaned)) return false;
-  if (words.length > 4 && !cleaned.includes(",")) return false;
-
-  return splitAuthorNames(cleaned).some(name => looksLikePersonalName(name));
-}
-
-function looksLikeSeriesLine(text) {
-  const cleaned = cleanFrontMatterLine(text);
-  return /^(sources?\s+chr[ée]tiennes?|n[°o]\s*\d+|series|volume|vol\.?)\b/i.test(cleaned) ||
-    /\bseries\b/i.test(cleaned);
-}
-
 function looksLikeEditionLine(text) {
   const cleaned = cleanFrontMatterLine(text);
-  return /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?|premi[èe]re|deuxi[èe]me|troisi[èe]me)\s+(edition|ed\.?|édition|réimpression)\b/i.test(cleaned) ||
-    /\b(edition|ed\.?|édition|réimpression)\b/i.test(cleaned) && cleaned.split(/\s+/).length <= 6;
-}
-
-function looksLikeSubtitleLine(text) {
-  const cleaned = cleanFrontMatterLine(text);
-  if (!cleaned || isMostlyAllCaps(cleaned)) return false;
-  if (looksLikeSeriesLine(cleaned)) return false;
-  if (looksLikeResponsibilityRoleLine(cleaned)) return false;
-
-  const words = cleaned.split(/\s+/);
-  if (words.length < 2 || words.length > 14) return false;
-
-  const hasTitleConnector = /\b(a|an|and|for|from|how|in|of|on|or|the|to|with|why)\b/i.test(cleaned);
-  if (looksLikeAuthorLine(cleaned) && !hasTitleConnector) return false;
-
-  return /^(a|an|and|for|from|how|in|of|on|or|the|to|with|why)\b/i.test(cleaned) ||
-    hasTitleConnector ||
-    (/[a-z]/.test(cleaned) && /[A-Z]/.test(cleaned));
-}
-
-function looksLikeDirectResponsibilityLine(text) {
-  const cleaned = cleanFrontMatterLine(text);
-  return /\b(translated|translation|edited|editor|introduction|introduced|bibliography|bibliographie|notes?|commentary|latin text|texte latin|traduction|traduit|preface|préface|foreword|annotated|annotations?)\b/i.test(cleaned) &&
-    /\b(by|par)\b/i.test(cleaned);
-}
-
-function looksLikeResponsibilityRoleLine(text) {
-  const cleaned = cleanFrontMatterLine(text);
-  return /\b(translated|translation|edited|editor|introduction|introduced|bibliography|bibliographie|notes?|commentary|latin text|texte latin|traduction|traduit|preface|préface|foreword|annotated|annotations?)\b/i.test(cleaned);
+  return /^(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?|premi[èe]re|deuxi[èe]me|troisi[èe]me|revised|expanded|new)\s+)?(?:edition|ed|édition|réimpression)\.?$/i.test(cleaned);
 }
 
 function normalizeResponsibilityStatement(text, evidenceText = "") {
@@ -1574,10 +877,6 @@ function extractOriginalScriptResponsibilityName(text) {
   return nonLatinRuns[0] || "";
 }
 
-function formatResponsibilityRoles(lines) {
-  return sentenceCaseText(cleanCitationText(lines.join(", ")));
-}
-
 function normalizeContributorName(text) {
   return stripNameCredentials(text)
     .replace(/[.,;:]+$/g, "")
@@ -1639,15 +938,6 @@ function stripNameCredentials(text) {
   return cleaned;
 }
 
-function looksLikeContributorName(text) {
-  const cleaned = cleanCitationText(text);
-  if (!cleaned || cleaned.length > 80) return false;
-  if (/[0-9]/.test(cleaned)) return false;
-  if (/\b(directeur|director|professor|universit|école|school|press|publisher)\b/i.test(cleaned)) return false;
-  if (containsNonLatinScript(cleaned) && /^[\p{L}\s,.·-]{2,20}$/u.test(cleaned)) return true;
-  return cleaned.split(/\s+/).length >= 2;
-}
-
 function sentenceCaseText(text) {
   const cleaned = cleanCitationText(text).toLocaleLowerCase("fr");
   return cleaned ? cleaned.charAt(0).toLocaleUpperCase("fr") + cleaned.slice(1) : "";
@@ -1655,16 +945,6 @@ function sentenceCaseText(text) {
 
 function escapeRegExp(text) {
   return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function isUsefulFrontMatterLine(text) {
-  if (!text || text.length < 3 || text.length > 140) return false;
-  if (/^\d+$/.test(text)) return false;
-  if (looksLikeCatalogControlLine(text)) return false;
-  if (/^(copyright|all rights reserved|printed in|library of congress|isbn|issn|doi|www\.|http|publisher|published by|contents|table of contents)$/i.test(text)) return false;
-  if (/(copyright|all rights reserved|library of congress|isbn|issn|cataloging|cataloguing|manufactured in|printed in|permission|rights reserved)/i.test(text)) return false;
-  if (/^[.\-_/\\|]+$/.test(text)) return false;
-  return true;
 }
 
 function cleanFrontMatterLine(text) {
@@ -1697,11 +977,4 @@ function cleanCitationText(text) {
     .replace(/\s*,\s*,/g, ",")
     .replace(/\s+,\s+/g, ", ")
     .trim();
-}
-
-function isMostlyAllCaps(text) {
-  const letters = text.replace(/[^A-Za-z]/g, "");
-  if (letters.length < 4) return false;
-  const uppercase = letters.replace(/[^A-Z]/g, "").length;
-  return uppercase / letters.length > 0.85;
 }
