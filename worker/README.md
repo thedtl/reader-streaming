@@ -77,7 +77,7 @@ numbers.
 
 ## Citation metadata
 
-Commentary roles (2026-10-14, local change, not deployed): a scholar credited
+Commentary roles (released 2026-10-14): a scholar credited
 with a commentary's introduction, translation and notes is cited as its author,
 not automatically as translator. The supplied Esther title page supports
 `Moore, Carey A. Esther. The Anchor Bible.` No volume is inferred or missing-volume
@@ -86,6 +86,15 @@ editions retain separately observed author/translator roles; the same phrase
 does not make every annotated translation a commentary. This clarification uses
 the existing scan, with no added pages or AI calls. Mocked tests verify the
 instruction and formatting handoff, not fresh model accuracy.
+
+Worker source `66bde7b` is deployed as `87e3900b-521e-4a17-96b9-30e3b5bb08b1`
+at 100%; streaming generator source `c933331` is published. All 66 offline checks
+pass. Served UI bytes match and its actual formatter preserves the Moore example;
+health, authentication rejection (401) and Pages CORS pass. The first live check
+incorrectly expected 403 instead of the existing 401; corrected the check only.
+Runtime settings and binding names match the previous version. No new AI scan,
+PDF download, stable-service change or storage change; temporary dependency link
+removed without an install. Original reader/generator and ToC services untouched.
 
 The existing scan distinguishes an original collected-work author, volume
 editors, and general/series editors. Preserve the volume-specific title, number
