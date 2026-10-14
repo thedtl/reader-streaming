@@ -735,6 +735,34 @@ test("Worker forwards rendered front and imprint images to Gemini", async () => 
   assert.match(prompt, /A publisher's academic series containing distinct books is not a multi-volume work/);
   assert.match(prompt, /preserving its language and numeral form/);
   assert.match(prompt, /Do not infer either from filenames, hints, order, or a bare series number/);
+  assert.match(prompt, /Distinguish a scholarly commentary from a translated edition/);
+  assert.match(prompt, /do not require or invent an original author/);
+  assert.match(prompt, /retain the complete printed credit in visibleEvidence\.contributor/);
+  assert.match(prompt, /an absent volume is simply omitted, not announced/);
+  assert.match(prompt, /A translation-only edition keeps its explicit translator role/);
+  assert.match(prompt, /Preserve combined responsibilities in full/);
+});
+
+test("commentary author and series survive both heading and field assembly without a translator suffix", async () => {
+  // Reviewer-supplied title-page credit; mocked response, not an AI accuracy test.
+  const heading = "Moore, Carey A. Esther. The Anchor Bible.";
+  for (const returnedHeading of [heading, ""]) {
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" }, lines: [],
+      images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
+      parsedAiResponse: {
+        contributor: "Carey A. Moore", title: "Esther", series: "The Anchor Bible",
+        seriesNumber: "", responsibilityStatement: "", heading: returnedHeading,
+        visibleEvidence: {
+          contributor: "INTRODUCTION, TRANSLATION, AND NOTES BY CAREY A. MOORE",
+          title: "ESTHER", series: "THE ANCHOR BIBLE",
+        },
+      },
+    });
+    assert.equal(result.heading, heading);
+    assert.equal(result.downloadVolume, null);
+    assert.equal(result.geminiCallCount, 1);
+  }
 });
 
 test("citation cleanup preserves title dates and bracketed publication dates, not page locators", async () => {

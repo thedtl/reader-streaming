@@ -77,6 +77,16 @@ numbers.
 
 ## Citation metadata
 
+Commentary roles (2026-10-14, local change, not deployed): a scholar credited
+with a commentary's introduction, translation and notes is cited as its author,
+not automatically as translator. The supplied Esther title page supports
+`Moore, Carey A. Esther. The Anchor Bible.` No volume is inferred or missing-volume
+notice added. Preserve the complete credit as evidence. Genuine translated
+editions retain separately observed author/translator roles; the same phrase
+does not make every annotated translation a commentary. This clarification uses
+the existing scan, with no added pages or AI calls. Mocked tests verify the
+instruction and formatting handoff, not fresh model accuracy.
+
 The existing scan distinguishes an original collected-work author, volume
 editors, and general/series editors. Preserve the volume-specific title, number
 and title date span; role formatting must not promote an editor over an author.
