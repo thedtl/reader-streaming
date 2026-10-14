@@ -73,7 +73,6 @@ test("missing AI key leaves citation unfilled even with clean embedded text", as
 
   assert.equal(result.source, "unavailable");
   assert.equal(result.heading, "");
-  assert.equal(result.downloadVolume, null);
   assert.equal(result.geminiCallCount, 0);
 });
 
@@ -137,7 +136,6 @@ test("complete AI heading passes with separately supported contributor and title
 
   assert.equal(result.source, "ai");
   assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
-  assert.equal(result.downloadVolume, null);
 });
 
 test("garbled hidden text never overwrites the supported image reading", async () => {
@@ -184,7 +182,6 @@ test("empty or unsupported AI core leaves citation unfilled without text fallbac
     const result = await requestSuggestion({ env: { GEMINI_API_KEY: "fake" }, parsedAiResponse });
     assert.equal(result.heading, "");
     assert.equal(result.source, "none");
-    assert.equal(result.downloadVolume, null);
     assert.equal(result.geminiCallCount, 1);
   }
 });
@@ -195,7 +192,6 @@ test("transport failure is unavailable, never a heuristic citation", async () =>
   });
   assert.equal(result.heading, "");
   assert.equal(result.source, "unavailable");
-  assert.equal(result.downloadVolume, null);
   assert.equal(result.geminiCallCount, 1);
 });
 
@@ -732,9 +728,6 @@ test("Worker forwards rendered front and imprint images to Gemini", async () => 
   assert.match(prompt, /cite that original author first/);
   assert.match(prompt, /general editor of the set is not automatically the editor of this volume/);
   assert.match(prompt, /Preserve the collective work title, this volume's specific title/);
-  assert.match(prompt, /A publisher's academic series containing distinct books is not a multi-volume work/);
-  assert.match(prompt, /preserving its language and numeral form/);
-  assert.match(prompt, /Do not infer either from filenames, hints, order, or a bare series number/);
   assert.match(prompt, /Distinguish a scholarly commentary from a translated edition/);
   assert.match(prompt, /do not require or invent an original author/);
   assert.match(prompt, /retain the complete printed credit in visibleEvidence\.contributor/);
@@ -760,9 +753,34 @@ test("commentary author and series survive both heading and field assembly witho
       },
     });
     assert.equal(result.heading, heading);
-    assert.equal(result.downloadVolume, null);
     assert.equal(result.geminiCallCount, 1);
   }
+});
+
+test("existing metadata read requests consistent Chicago display without changing observed facts", async () => {
+  // Prompt transport only: a mocked response cannot prove model style adherence.
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" }, lines: [],
+    images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
+    parsedAiResponse: { heading: "", visibleEvidence: {} },
+  });
+  const prompt = result.geminiRequestBody.contents[0].parts[0].text;
+  assert.match(prompt, /Chicago notes-and-bibliography entry/);
+  assert.match(prompt, /vol\. \(Vol\. at the start of a sentence\), not volume/);
+  assert.match(prompt, /complete observed number, including any letter suffix/);
+  assert.match(prompt, /observed ordinal for a numbered edition and abbreviate edition as ed\., preserving revision, anniversary/);
+  assert.match(prompt, /Do not invent an edition number/);
+  assert.match(prompt, /not permission to abbreviate genuine title words/);
+  assert.match(prompt, /exact supporting words in visibleEvidence/);
+  assert.match(prompt, /For an explicitly observed series volume use Series Title, vol\. N/);
+  assert.match(prompt, /for a bare series number use Series Title N, without inventing a volume label/);
+  assert.match(prompt, /Do not invent a number, contributor role, or series\/work relationship/);
+  assert.match(prompt, /Omit absent details silently/);
+  assert.doesNotMatch(prompt, /downloadVolume|multiVolumeWorkTitle|workVolume/);
+  assert.equal(result.geminiCallCount, 1);
+  assert.equal(result.geminiRequestBody.contents[0].parts.filter(part => part.inlineData).length, 1);
+  assert.equal(result.heading, "");
+  assert.equal(Object.hasOwn(result, "downloadVolume"), false);
 });
 
 test("citation cleanup preserves title dates and bracketed publication dates, not page locators", async () => {
@@ -792,22 +810,17 @@ test("collected-work author, volume title and edition editors survive heading as
     parsedAiResponse: {
       contributor: "John Wesley",
       title: "The Works of John Wesley, Volume 19: Journal and Diaries II (1738–43)",
-      multiVolumeWorkTitle: "The Works of John Wesley",
-      workVolume: "Volume 19",
       responsibilityStatement: "Edited by W. Reginald Ward and Richard P. Heitzenrater",
       city: "Nashville", publisher: "Abingdon Press", year: "1990",
       visibleEvidence: {
         contributor: "THE WORKS OF JOHN WESLEY",
         title: "THE WORKS OF JOHN WESLEY VOLUME 19 JOURNAL AND DIARIES II (1738–43)",
-        multiVolumeWorkTitle: "The Works of John Wesley",
-        workVolume: "Volume 19",
         responsibilityStatement: "EDITED BY W. REGINALD WARD (JOURNAL) AND RICHARD P. HEITZENRATER (DIARIES)",
         city: "NASHVILLE", publisher: "ABINGDON PRESS", year: "1990",
       },
     },
   });
   assert.equal(result.heading, "Wesley, John. The Works of John Wesley, Volume 19: Journal and Diaries II (1738–43). Edited by W. Reginald Ward and Richard P. Heitzenrater. Nashville: Abingdon Press, 1990.");
-  assert.deepEqual(result.downloadVolume, { title: "The Works of John Wesley", designation: "Volume 19" });
   assert.equal(result.geminiRequestBody.contents[0].parts.filter(part => part.inlineData).length, 1);
   assert.equal(result.geminiCallCount, 1);
 });
@@ -820,57 +833,9 @@ test("publisher academic series stays in the citation without download volume me
     parsedAiResponse: {
       contributor: "Jane Smith", title: "A Distinct Book Title",
       heading, series: "Wissenschaftliche Untersuchungen zum Neuen Testament", seriesNumber: "421",
-      multiVolumeWorkTitle: "", workVolume: "",
-      visibleEvidence: { contributor: "Jane Smith", title: "A Distinct Book Title", heading, series: "Wissenschaftliche Untersuchungen zum Neuen Testament", seriesNumber: "421", multiVolumeWorkTitle: "", workVolume: "" },
+      visibleEvidence: { contributor: "Jane Smith", title: "A Distinct Book Title", heading, series: "Wissenschaftliche Untersuchungen zum Neuen Testament", seriesNumber: "421" },
     },
   });
   assert.equal(result.heading, heading);
-  assert.equal(result.downloadVolume, null);
-});
-
-test("download volume preserves observed language and numeral form while reflowing whitespace", async () => {
-  for (const [title, designation] of [["Gesammelte Werke", "Band XIX"], ["全集", "第十九巻"]]) {
-    const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake", GEMINI_MODEL: "configured-model" },
-      parsedAiResponse: {
-        ...BIEREMA_CORE,
-        heading: EXPECTED_BIEREMA_HEADING, multiVolumeWorkTitle: title, workVolume: designation,
-        visibleEvidence: { ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, multiVolumeWorkTitle: title.replaceAll(" ", "\n"), workVolume: designation.replaceAll(" ", "\n") },
-      },
-    });
-    assert.deepEqual(result.downloadVolume, { title, designation });
-    assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
-    assert.equal(result.geminiCallCount, 1);
-    assert.equal(result.geminiRequestPath, "/v1beta/models/configured-model:generateContent");
-  }
-});
-
-test("missing, malformed or mismatched volume evidence does not affect the heading", async () => {
-  const metadata = { multiVolumeWorkTitle: "Collected Works", workVolume: "Volume IV" };
-  const cases = [
-    {},
-    { ...metadata, visibleEvidence: {} },
-    { ...metadata, visibleEvidence: { multiVolumeWorkTitle: "Collected Works" } },
-    { ...metadata, visibleEvidence: { workVolume: "Volume IV" } },
-    { ...metadata, visibleEvidence: { ...metadata, workVolume: "Volume VI" } },
-    { ...metadata, workVolume: "Volume I", visibleEvidence: metadata },
-    { ...metadata, visibleEvidence: { ...metadata, multiVolumeWorkTitle: "Another Work" } },
-    { ...metadata, visibleEvidence: { ...metadata, workVolume: ["Volume IV"] } },
-    { ...metadata, visibleEvidence: { ...metadata, workVolume: "  " } },
-    { ...metadata, workVolume: 4, visibleEvidence: metadata },
-    { ...metadata, multiVolumeWorkTitle: null, visibleEvidence: metadata },
-    { ...metadata, workVolume: "", visibleEvidence: metadata },
-    { ...metadata, evidence: metadata },
-  ];
-  for (const candidate of cases) {
-    const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
-      parsedAiResponse: { ...BIEREMA_CORE, ...candidate, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: { ...BIEREMA_CORE, ...candidate.visibleEvidence, heading: EXPECTED_BIEREMA_HEADING } },
-    });
-    assert.equal(result.downloadVolume, null, JSON.stringify(candidate));
-    assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
-  }
-  const empty = await requestSuggestion({ lines: [] });
-  assert.equal(empty.source, "none");
-  assert.equal(empty.downloadVolume, null);
+  assert.equal(Object.hasOwn(result, "downloadVolume"), false);
 });

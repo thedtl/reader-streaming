@@ -17,7 +17,6 @@ export async function handleSuggestHeading(request, env, helpers) {
   if (lines.length === 0 && images.length === 0) {
     return helpers.json({
       heading: "",
-      downloadVolume: null,
       source: "none",
       note: "No usable front-matter text was provided.",
     }, request, env);
@@ -25,7 +24,7 @@ export async function handleSuggestHeading(request, env, helpers) {
 
   if (!env.GEMINI_API_KEY) {
     return helpers.json({
-      heading: "", downloadVolume: null, source: "unavailable",
+      heading: "", source: "unavailable",
       note: "The metadata reader is not configured. Enter the citation manually; chapter links can still be generated.",
     }, request, env);
   }
@@ -47,7 +46,7 @@ export async function handleSuggestHeading(request, env, helpers) {
       finishReason: error.finishReason || null,
     });
     return helpers.json({
-      heading: "", downloadVolume: null, source: "unavailable",
+      heading: "", source: "unavailable",
       note: "The metadata scan failed. Try the scan again or enter the citation manually; chapter links can still be generated.",
     }, request, env);
   }
@@ -137,11 +136,13 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "For each non-empty field, put the exact supporting visible words in visibleEvidence using the same field name.",
     "Do not include internal source markers such as page labels, page numbers, '(Page 4)', '[Page 4]', or similar locator notes in any citation field.",
     "If a field is likely but not explicitly visible, leave that field blank. Do not fill gaps from general knowledge, catalogs, memory, or assumptions.",
-    "Extract separate bibliographic fields first, then create one clean Chicago Manual of Style bibliography-style entry for the whole book or source in heading.",
+    "Extract separate bibliographic fields first, then create one consistent Chicago notes-and-bibliography entry for the whole book or source in heading.",
     "If contributor or title cannot be filled from visible evidence, leave heading blank rather than guessing a final citation.",
     "The heading is the authoritative final answer. Do not copy repeated contributor snippets, production credits, or role labels such as 지은이, 지음, 저자, or 저 into heading.",
     "The structured fields should support the final heading, but the heading should be a polished citation rather than a dump of every visible contributor-like phrase.",
-    "Use this final style when the facts are visible: Last Name, First Name. Title: Subtitle. Responsibility statement. Series Title, volume/number. City: Publisher, Year.",
+    "Use this final style when the facts are visible: Last Name, First Name. Title: Subtitle. Responsibility statement. Edition statement. Series statement. City: Publisher, Year.",
+    "In heading, consistently abbreviate a bibliographic volume designation as vol. (Vol. at the start of a sentence), not volume; retain the complete observed number, including any letter suffix. Use an observed ordinal for a numbered edition and abbreviate edition as ed., preserving revision, anniversary, and other meaningful qualifiers. Do not invent an edition number for an unnumbered revised edition. These are display conventions, not permission to abbreviate genuine title words or change the exact supporting words in visibleEvidence.",
+    "Keep a numbered publisher series distinct from a volume of a multi-volume work. For an explicitly observed series volume use Series Title, vol. N; for a bare series number use Series Title N, without inventing a volume label. Do not invent a number, contributor role, or series/work relationship. Omit absent details silently rather than adding a missing-volume notice.",
     "Do not split a single stacked title block into title plus series just because it contains a volume line. If the title page presents 'Lexham Geographic Commentary / on the Historical Books / Volume 2: 1 Samuel-Esther', cite that title block as 'Lexham Geographic Commentary on the Historical Books: Volume 2, 1 Samuel-Esther'.",
     "For a personal author shown as First Name Last Name, invert the author in the final bibliography heading as Last Name, First Name.",
     "For non-Latin-script personal authors, do not invert the original-script name. Keep the original-script name in visible order and add a romanized Latin-script form in square brackets, for example: 박성덕 [Park Sung-deok].",
@@ -171,8 +172,6 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "Do not put title, subtitle, series, or edition text in contributor. For example, if a title page says 'ADULT LEARNING / Linking Theory and Practice / Second Edition / Laura L. Bierema, Monica Fedeli, Sharan B. Merriam', contributor is the three named people, title is Adult Learning: Linking Theory and Practice, and edition is Second Edition.",
     "An edition statement such as Second Edition is never the title by itself; put it in edition and keep looking for the actual title.",
     "Extract series title and series volume/number when they are clearly visible as a separate series statement, especially for commentary series or multi-volume sets. Do not move words from the displayed title block into series.",
-    "Separately, fill multiVolumeWorkTitle and workVolume only when this is a numbered volume of the same multi-volume work under a common collective title. A publisher's academic series containing distinct books is not a multi-volume work, even when its books have series numbers; leave both fields blank for such series or an uncertain relationship. Keep ordinary series details in the citation fields above.",
-    "multiVolumeWorkTitle is the visibly stated common work title; workVolume is this volume's complete observed designation, preserving its language and numeral form. Copy both verbatim apart from whitespace, with the exact supporting words in the same visibleEvidence fields. Do not infer either from filenames, hints, order, or a bare series number. Leave both blank if either is not visible. These download fields do not replace or shorten the full bibliographic heading.",
     "Look for publication facts on copyright/title-page verso pages and final imprint/copyright pages: publisher name, publication place, and publication year.",
     "Use the copyright/publication statement for this book, not the copyright year of quoted scripture, licensed translations, illustrations, or other reproduced material. Read the full statement to identify whose date it is; do not select a year merely because it is the first, last, or largest number. A street address or postal district is not a person's name or part of the publication city.",
     "If a page lists both an original or first-publication date and a later printing or edition date, use the later visible printing/edition date for this scanned copy.",
@@ -187,7 +186,7 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "When visibleEvidence.publisher contains a labeled imprint publisher, copy that exact publisher name into publisher and into the final heading. Do not shorten 도서출판 꿈미 to 꿈미, do not rewrite it as 꾸밈, and do not use a design/production credit as publisher.",
     "If place, publisher, or year are not visible, omit only the missing pieces instead of inventing them.",
     "Ignore ISBN, copyright boilerplate, library-cataloging blocks, table-of-contents lines, and chapter-title lines.",
-    "Return JSON only, with this shape: {\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"multiVolumeWorkTitle\":\"...\",\"workVolume\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\",\"visibleEvidence\":{\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"multiVolumeWorkTitle\":\"...\",\"workVolume\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\"},\"warnings\":[\"...\"]}.",
+    "Return JSON only, with this shape: {\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\",\"visibleEvidence\":{\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\"},\"warnings\":[\"...\"]}.",
     "",
     sourceAuthorHint ? `Filename/author hint for bracketed contributor form only: ${sourceAuthorHint}` : "",
     sourceTitleHint ? `Filename/title hint for bracketed English title only: ${sourceTitleHint}` : "",
@@ -241,23 +240,7 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     .map(part => part.text).join("");
   const parsed = JSON.parse(responseText || "{}");
   logAiCitationSummary(parsed);
-  const heading = buildAiCitation(parsed, hints);
-  return {
-    heading,
-    downloadVolume: heading ? buildDownloadVolume(parsed) : null,
-  };
-}
-
-function buildDownloadVolume(parsed) {
-  const evidence = parsed.visibleEvidence;
-  const [title, designation] = ["multiVolumeWorkTitle", "workVolume"].map(key => {
-    if (typeof parsed[key] !== "string" || typeof evidence?.[key] !== "string") return "";
-    const value = parsed[key].replace(/\s+/g, " ").trim();
-    return supportedAiField(parsed, evidence, key) && evidence[key].replace(/\s+/g, " ").trim() === value
-      ? value
-      : "";
-  });
-  return title && designation ? { title, designation } : null;
+  return { heading: buildAiCitation(parsed, hints) };
 }
 
 function logAiCitationSummary(parsed) {

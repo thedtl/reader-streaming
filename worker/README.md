@@ -77,6 +77,11 @@ numbers.
 
 ## Citation metadata
 
+Prepared locally: the existing read requests consistent Chicago volume/edition
+abbreviations, retaining observed letter suffixes and meaningful edition qualifiers.
+Numbered series and multi-volume works remain distinct; missing details are omitted.
+Exact visible evidence is unchanged. Prompt tests do not prove model adherence.
+
 Commentary roles (released 2026-10-14): a scholar credited
 with a commentary's introduction, translation and notes is cited as its author,
 not automatically as translator. The supplied Esther title page supports
@@ -141,16 +146,11 @@ original reader/ToC services, PDF delivery and existing files are unchanged.
 
 ## Chapter PDF filenames
 
-Chapter filename support: the existing metadata call supplies
-an evidenced common work title and volume designation only for numbered volumes
-of one multi-volume work, not publisher series of distinct books. The generator
-can send optional `chapters[].filename` to `/batch-sign` (or `filename` to `/sign`).
-It is sanitized and signed as `fn`; both chapter-only delivery paths expose an
-inline UTF-8 Content-Disposition filename for PDF.js. Generated labels put the volume
-first, before the work and chapter titles, within a 240-byte filename bound.
-Tokens without `fn` retain their old behavior. Download permissions, source ranges,
-PDF title metadata and the slicer's unbuffered body are unchanged. No new model
-call, source-page read, storage location, secret or service is required.
+Removed locally at the user's request: metadata extraction no longer requests or
+returns a multi-volume chapter-filename label. Actual volume information remains
+in citations. This does not change the ToC Creator's full bookmarked-PDF filenames.
+Existing optional signed `fn` values and filename headers remain supported so
+previously generated links keep working. Download permissions and ranges are unchanged.
 
 Released 2026-10-07: Worker source `8cd177f`, version
 `262bc981-3ddf-4a33-be7c-101bbcce9634` at 100%; generator `e698c17`.
