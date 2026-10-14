@@ -77,10 +77,15 @@ numbers.
 
 ## Citation metadata
 
-Prepared locally: the existing read requests consistent Chicago volume/edition
+Released 2026-10-14: the existing read requests consistent Chicago volume/edition
 abbreviations, retaining observed letter suffixes and meaningful edition qualifiers.
 Numbered series and multi-volume works remain distinct; missing details are omitted.
 Exact visible evidence is unchanged. Prompt tests do not prove model adherence.
+Source `a7c88be`, deployed version `6a44742e-aa81-4ee5-abdc-5c99d1d101c0` at 100%.
+All 40 Worker and 27 generator checks pass; health/auth/CORS pass. Nonsecret
+binding metadata, secret binding names, handlers and runtime match the prior
+version. The generator's published source `b68b45e` matches the tested page.
+No new model call, PDF access, credential change or ToC-service update.
 
 Commentary roles (released 2026-10-14): a scholar credited
 with a commentary's introduction, translation and notes is cited as its author,
@@ -92,7 +97,7 @@ does not make every annotated translation a commentary. This clarification uses
 the existing scan, with no added pages or AI calls. Mocked tests verify the
 instruction and formatting handoff, not fresh model accuracy.
 
-Worker source `66bde7b` is deployed as `87e3900b-521e-4a17-96b9-30e3b5bb08b1`
+Worker source `66bde7b` was deployed as `87e3900b-521e-4a17-96b9-30e3b5bb08b1`
 at 100%; streaming generator source `c933331` is published. All 66 offline checks
 pass. Served UI bytes match and its actual formatter preserves the Moore example;
 health, authentication rejection (401) and Pages CORS pass. The first live check
@@ -146,7 +151,7 @@ original reader/ToC services, PDF delivery and existing files are unchanged.
 
 ## Chapter PDF filenames
 
-Removed locally at the user's request: metadata extraction no longer requests or
+Removed in this release at the user's request: metadata extraction no longer requests or
 returns a multi-volume chapter-filename label. Actual volume information remains
 in citations. This does not change the ToC Creator's full bookmarked-PDF filenames.
 Existing optional signed `fn` values and filename headers remain supported so
