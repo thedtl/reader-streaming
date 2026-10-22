@@ -188,6 +188,9 @@ No prompt, schema, model, provider call count or citation-heading change. Missin
 unsupported or non-string titles and unavailable headings return an empty title.
 The generator requires an exact unambiguous match or an explicit manual selection;
 it must not derive italics from name punctuation. All 49 Worker tests pass.
+Source `20c3569` is deployed as `891fec3a-d1a9-4834-89dc-ffa05e8f3b27` at
+100%; generator `1f50bd0` is published. All 88 combined checks pass, with live
+health/auth/CORS and unchanged runtime/binding metadata. No fresh AI calls.
 
 ```sh
 npm ci
