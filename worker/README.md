@@ -182,6 +182,13 @@ No fresh AI scan or patron download was run; old links and services are unchange
 
 ## Local check
 
+Title italics update (2026-10-22): `/suggest-heading` also returns `title`, using
+the separately supported title already present in the existing AI response.
+No prompt, schema, model, provider call count or citation-heading change. Missing,
+unsupported or non-string titles and unavailable headings return an empty title.
+The generator requires an exact unambiguous match or an explicit manual selection;
+it must not derive italics from name punctuation. All 49 Worker tests pass.
+
 ```sh
 npm ci
 npm run check

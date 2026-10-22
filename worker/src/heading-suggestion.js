@@ -16,7 +16,7 @@ export async function handleSuggestHeading(request, env, helpers) {
   const sourceTitleHint = normalizeSourceTitleHint(body.sourceTitleHint);
   if (lines.length === 0 && images.length === 0) {
     return helpers.json({
-      heading: "",
+      heading: "", title: "",
       source: "none",
       note: "No usable front-matter text was provided.",
     }, request, env);
@@ -24,7 +24,7 @@ export async function handleSuggestHeading(request, env, helpers) {
 
   if (!env.GEMINI_API_KEY) {
     return helpers.json({
-      heading: "", source: "unavailable",
+      heading: "", title: "", source: "unavailable",
       note: "The metadata reader is not configured. Enter the citation manually; chapter links can still be generated.",
     }, request, env);
   }
@@ -46,7 +46,7 @@ export async function handleSuggestHeading(request, env, helpers) {
       finishReason: error.finishReason || null,
     });
     return helpers.json({
-      heading: "", source: "unavailable",
+      heading: "", title: "", source: "unavailable",
       note: "The metadata scan failed. Try the scan again or enter the citation manually; chapter links can still be generated.",
     }, request, env);
   }
@@ -243,8 +243,13 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
   const parsed = JSON.parse(responseText || "{}");
   logAiCitationSummary(parsed);
   const warnings = normalizeCitationWarnings(parsed?.warnings);
+  const heading = buildAiCitation(parsed, hints);
+  const supportedTitle = heading && typeof parsed?.title === "string"
+    ? supportedAiField(parsed, normalizeEvidenceMap(parsed.visibleEvidence || parsed.evidence || {}), "title")
+    : "";
   return {
-    heading: buildAiCitation(parsed, hints),
+    heading,
+    title: supportedTitle ? formatCitationTitle(normalizeTitleField(supportedTitle, hints?.sourceTitleHint)) : "",
     note: warnings.length ? `Please review the citation: ${warnings.join(" ")}` : "",
   };
 }

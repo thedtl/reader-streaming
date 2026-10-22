@@ -73,6 +73,7 @@ test("missing AI key leaves citation unfilled even with clean embedded text", as
 
   assert.equal(result.source, "unavailable");
   assert.equal(result.heading, "");
+  assert.equal(result.title, "");
   assert.equal(result.geminiCallCount, 0);
 });
 
@@ -136,6 +137,64 @@ test("complete AI heading passes with separately supported contributor and title
 
   assert.equal(result.source, "ai");
   assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
+  assert.equal(result.title, BIEREMA_CORE.title);
+});
+
+test("returned title reuses supported field display, including subtitles and non-Latin text", async () => {
+  for (const [title, displayedTitle] of [
+    ["A Title: Its Subtitle?", "A Title: Its Subtitle?"],
+    ["THE TEXT'S WORLD: A STUDY", "The Text's World: A Study"],
+    ["성경 강해설교 [Biblical Preaching]: 전달 [Delivery]", "성경 강해설교: 전달 [Biblical Preaching: Delivery]"],
+  ]) {
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      parsedAiResponse: {
+        contributor: "Smith, Jane", title,
+        visibleEvidence: { contributor: "Jane Smith", title },
+      },
+    });
+    assert.equal(result.title, displayedTitle);
+    assert.equal(result.heading, `Smith, Jane. ${displayedTitle}.`);
+    assert.equal(result.geminiCallCount, 1);
+  }
+});
+
+test("returned title never comes from the final heading or unsupported/non-string fields", async () => {
+  for (const title of [undefined, "", { text: "A Test Work" }, ["A Test Work"], 123]) {
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      parsedAiResponse: {
+        contributor: "Smith, Jane", title, heading: "Smith, Jane. A Test Work.",
+        visibleEvidence: { contributor: "Jane Smith", title: "A Test Work" },
+      },
+    });
+    assert.equal(result.title, "");
+    assert.equal(result.geminiCallCount, 1);
+  }
+  for (const visibleEvidence of [{ contributor: "Jane Smith" }, { title: "A Test Work" }]) {
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      parsedAiResponse: {
+        contributor: "Smith, Jane", title: "A Test Work", heading: "Smith, Jane. A Test Work.", visibleEvidence,
+      },
+    });
+    assert.equal(result.heading, "");
+    assert.equal(result.title, "");
+  }
+});
+
+test("a primary full heading stays authoritative while title is independently returned", async () => {
+  const heading = "Smith, Jane. A Different Display Title. Example Press, 2026.";
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    parsedAiResponse: {
+      contributor: "Smith, Jane", title: "The Separately Read Title: With Its Subtitle", heading,
+      visibleEvidence: { contributor: "Jane Smith", title: "The Separately Read Title With Its Subtitle" },
+    },
+  });
+  assert.equal(result.heading, heading);
+  assert.equal(result.title, "The Separately Read Title: With Its Subtitle");
+  assert.equal(result.geminiCallCount, 1);
 });
 
 test("name structure belongs to the page reader, not a last-word surname fallback", async () => {
