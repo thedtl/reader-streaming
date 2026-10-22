@@ -77,6 +77,17 @@ numbers.
 
 ## Citation metadata
 
+Pending deployment (2026-10-22): the same metadata request explicitly preserves
+compound surnames and historical/locative names instead of assuming the final
+word is a surname. Removed fallback surname inversion and two older repairs
+that deleted `and/&` to join initials/names; malformed returned names now remain
+for staff correction, not silent repair. Up to four bounded warnings reach the
+existing response note. Current-volume cataloging may corroborate series/volume
+(including letters), not override title-page identity or turn classification
+numbers into volumes. Model, image coverage, request count and bindings are
+unchanged. All 38 focused metadata tests pass with mocked inference; fresh
+reading accuracy and latency remain unmeasured. No provider call or deployment.
+
 Released 2026-10-14: the existing read requests consistent Chicago volume/edition
 abbreviations, retaining observed letter suffixes and meaningful edition qualifiers.
 Numbered series and multi-volume works remain distinct; missing details are omitted.

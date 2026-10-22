@@ -113,7 +113,7 @@ test("a genuine title about an edition remains valid without publication facts",
   const result = await requestSuggestion({
     env: { GEMINI_API_KEY: "fake" },
     parsedAiResponse: {
-      contributor: "Jane Smith", title,
+      contributor: "Smith, Jane", title,
       visibleEvidence: { contributor: "Jane Smith", title },
     },
   });
@@ -138,6 +138,107 @@ test("complete AI heading passes with separately supported contributor and title
   assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
 });
 
+test("name structure belongs to the page reader, not a last-word surname fallback", async () => {
+  const title = "A Test Work";
+  const names = [
+    "García Márquez, Gabriel",
+    "de la Cruz, Juana Inés",
+    "García Márquez, Gabriel, and María López García",
+    "Smith, Jane, and John Doe",
+    "Clement of Alexandria",
+    "St. Augustine of Hippo",
+    "Bonaventure",
+    "María López García", // Unresolved boundary: preserving it beats guessing García.
+  ];
+  for (const contributor of names) {
+    for (const heading of ["", `${contributor}. ${title}.`]) {
+      const result = await requestSuggestion({
+        env: { GEMINI_API_KEY: "fake" },
+        parsedAiResponse: {
+          contributor, title, heading,
+          visibleEvidence: { contributor, title },
+        },
+      });
+      assert.equal(result.heading, `${contributor}. ${title}.`);
+      assert.equal(result.geminiCallCount, 1);
+    }
+  }
+});
+
+test("scanner prompt preserves observed name boundaries without another request", async () => {
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    parsedAiResponse: {
+      contributor: "Clement of Alexandria", title: "A Test Work",
+      visibleEvidence: { contributor: "CLEMENT OF ALEXANDRIA", title: "A TEST WORK" },
+    },
+  });
+  const prompt = result.geminiRequestBody.contents[0].parts[0].text;
+  assert.match(prompt, /complete compound\/double surnames/);
+  assert.match(prompt, /final word is not automatically the surname/);
+  assert.match(prompt, /single historical name, epithet or locative/);
+  assert.match(prompt, /preserve the visible name order and state the uncertainty/);
+  assert.doesNotMatch(prompt, /shown as First Name Last Name, invert/);
+  assert.equal(result.geminiCallCount, 1);
+});
+
+test("scanner uses cataloging selectively for current-volume facts, not contributor identity", async () => {
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    parsedAiResponse: {
+      contributor: "Smith, Jane", title: "A Test Work", series: "A Commentary Series", seriesNumber: "40B",
+      visibleEvidence: { contributor: "Jane Smith", title: "A Test Work", series: "A Commentary Series", seriesNumber: "40B" },
+    },
+  });
+  const prompt = result.geminiRequestBody.contents[0].parts[0].text;
+  assert.match(prompt, /title page for title, contributor identity and responsibility/);
+  assert.match(prompt, /imprint for this scanned edition's publication facts/);
+  assert.match(prompt, /cataloging block for the current volume may corroborate its series name and exact volume designation/);
+  assert.match(prompt, /including an observed letter suffix/);
+  assert.match(prompt, /Do not use catalogue access headings as authors/);
+  assert.match(prompt, /classification\/ISBN numbers as volumes/);
+  assert.match(prompt, /must not override a conflicting visible title-page name/);
+  assert.doesNotMatch(prompt, /Ignore[^\n]*library-cataloging blocks/);
+  assert.match(result.heading, /A Commentary Series, 40B\./);
+  assert.equal(result.geminiCallCount, 1);
+});
+
+test("successful scan surfaces bounded text warnings through the existing note", async () => {
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    parsedAiResponse: {
+      contributor: "María López García", title: "A Test Work",
+      visibleEvidence: { contributor: "María López García", title: "A Test Work" },
+      warnings: [
+        null, { message: "not a string" }, "  ",
+        "Surname boundary is uncertain; visible order retained.",
+        "Check the publication date.",
+        "x".repeat(500),
+        "<b>Check the publisher.</b>",
+        "Fifth warning must be omitted.",
+      ],
+    },
+  });
+  assert.equal(result.source, "ai");
+  assert.equal(result.heading, "María López García. A Test Work.");
+  assert.equal(result.note, "Please review the citation: Surname boundary is uncertain; visible order retained. Check the publication date. " + "x".repeat(177) + "... <b>Check the publisher.</b>");
+  assert.equal(result.geminiCallCount, 1);
+});
+
+test("successful scans without usable warnings retain the normal review note", async () => {
+  for (const warnings of [undefined, [], [null, {}, " "], "not an array"]) {
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      parsedAiResponse: {
+        ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING,
+        visibleEvidence: BIEREMA_CORE, warnings,
+      },
+    });
+    assert.equal(result.note, "Read from the supplied pages. Please review the citation.");
+    assert.equal(result.geminiCallCount, 1);
+  }
+});
+
 test("garbled hidden text never overwrites the supported image reading", async () => {
   const result = await requestSuggestion({
     env: { GEMINI_API_KEY: "fake" },
@@ -151,7 +252,7 @@ test("garbled hidden text never overwrites the supported image reading", async (
     ],
     images: [{ pageNumber: 3, mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
-      contributor: "William P. Brown and S. Dean McBride Jr., eds.",
+      contributor: "Brown, William P., and S. Dean McBride Jr., eds.",
       title: "God Who Creates: Essays in Honor of W. Sibley Towner",
       city: "Grand Rapids", publisher: "William B. Eerdmans Publishing Company", year: "2000",
       visibleEvidence: {
@@ -284,13 +385,13 @@ test("AI structured responsibility field is normalized before citation assembly"
   );
 });
 
-test("credential initials are removed before author splitting", async () => {
+test("credential initials are removed without changing supplied contributor order", async () => {
   const result = await requestSuggestion({
     env: { GEMINI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
-      contributor: "Tim Arnold, Ph.D., Maya Rao, M.D.",
+      contributor: "Arnold, Tim, Ph.D., and Maya Rao, M.D.",
       title: "Credential Test",
       publisher: "Example Press",
       year: "2026",
@@ -308,7 +409,7 @@ test("credential initials are removed before author splitting", async () => {
   assert.doesNotMatch(result.heading, /Ph\.?D|M\.?D/i);
 });
 
-test("supported AI citation formats malformed inverted initial author", async () => {
+test("malformed AI name text is retained for review rather than guessing a repair", async () => {
   const result = await requestSuggestion({
     env: { GEMINI_API_KEY: "fake" },
     lines: [],
@@ -328,9 +429,23 @@ test("supported AI citation formats malformed inverted initial author", async ()
   assert.equal(result.source, "ai");
   assert.equal(
     result.heading,
-    "Robinson, Haddon W. Biblical Preaching: The Development and Delivery of Expository Messages. Fourth Edition. Bible Baptist Theological Seminary Press, 2025."
+    "Robinson, and Haddon W. Biblical Preaching: The Development and Delivery of Expository Messages. Fourth Edition. Bible Baptist Theological Seminary Press, 2025."
   );
-  assert.doesNotMatch(result.heading, /Robinson,\s+and\s+Haddon/);
+  assert.match(result.heading, /Robinson,\s+and\s+Haddon/);
+});
+
+test("structured contributors retain conjunctions instead of joining adjacent name tokens", async () => {
+  for (const contributor of ["A. and Smith", "J. & Lee", "Smith, A. and Jones"]) {
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      parsedAiResponse: {
+        contributor, title: "A Test Work",
+        visibleEvidence: { contributor, title: "A Test Work" },
+      },
+    });
+    assert.equal(result.heading, `${contributor}. A Test Work.`);
+    assert.equal(result.geminiCallCount, 1);
+  }
 });
 
 test("non-Latin title and subtitle use one combined bracketed English equivalent", async () => {
@@ -362,7 +477,7 @@ test("split bracket repair applies to non-Latin scripts beyond Korean", async ()
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
-      contributor: "Example Author",
+      contributor: "Author, Example",
       title: "عنوان رئيسي [Main Title]: عنوان فرعي [Subtitle]",
       visibleEvidence: {
         contributor: "Example Author",
@@ -385,7 +500,7 @@ test("non-Latin title uses translated title in brackets instead of romanization"
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
-      contributor: "Howard Rice",
+      contributor: "Rice, Howard",
       title: "영성 목회와 영적 지도 [Yeongseong Mokhoe wa Yeongjeok Jido]: The Pastor as Spiritual Guide",
       visibleEvidence: {
         contributor: "Howard Rice",
@@ -408,7 +523,7 @@ test("non-title citation fields keep original script without bracketed romanizat
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
-      contributor: "Howard Rice",
+      contributor: "Rice, Howard",
       title: "영성 목회와 영적 지도 [The Pastor as Spiritual Guide]",
       responsibilityStatement: "Translated by Choi, Dae-Hyung",
       series: "영성 목회 시리즈 [Spiritual Pastoral Care Series]",
@@ -591,7 +706,7 @@ test("structured editor contributors keep ed. with the author name", async () =>
     lines: [],
     images: [{ pageNumber: 1, mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
-      contributor: "Barry J. Beitzel, General Editor",
+      contributor: "Beitzel, Barry J., General Editor",
       title: "Lexham Geographic Commentary on the Historical Books: Volume 2, 1 Samuel-Esther",
       city: "Bellingham",
       publisher: "Lexham Press",
@@ -744,7 +859,7 @@ test("commentary author and series survive both heading and field assembly witho
       env: { GEMINI_API_KEY: "fake" }, lines: [],
       images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
       parsedAiResponse: {
-        contributor: "Carey A. Moore", title: "Esther", series: "The Anchor Bible",
+        contributor: "Moore, Carey A.", title: "Esther", series: "The Anchor Bible",
         seriesNumber: "", responsibilityStatement: "", heading: returnedHeading,
         visibleEvidence: {
           contributor: "INTRODUCTION, TRANSLATION, AND NOTES BY CAREY A. MOORE",
@@ -808,7 +923,7 @@ test("collected-work author, volume title and edition editors survive heading as
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
-      contributor: "John Wesley",
+      contributor: "Wesley, John",
       title: "The Works of John Wesley, Volume 19: Journal and Diaries II (1738–43)",
       responsibilityStatement: "Edited by W. Reginald Ward and Richard P. Heitzenrater",
       city: "Nashville", publisher: "Abingdon Press", year: "1990",

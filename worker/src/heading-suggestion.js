@@ -35,7 +35,7 @@ export async function handleSuggestHeading(request, env, helpers) {
       ...suggestion,
       source: suggestion.heading ? "ai" : "none",
       note: suggestion.heading
-        ? "Read from the supplied pages. Please review the citation."
+        ? suggestion.note || "Read from the supplied pages. Please review the citation."
         : "The scan could not establish a title and contributor. Enter the citation manually; chapter links can still be generated.",
     }, request, env);
   } catch (error) {
@@ -140,11 +140,12 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "If contributor or title cannot be filled from visible evidence, leave heading blank rather than guessing a final citation.",
     "The heading is the authoritative final answer. Do not copy repeated contributor snippets, production credits, or role labels such as 지은이, 지음, 저자, or 저 into heading.",
     "The structured fields should support the final heading, but the heading should be a polished citation rather than a dump of every visible contributor-like phrase.",
-    "Use this final style when the facts are visible: Last Name, First Name. Title: Subtitle. Responsibility statement. Edition statement. Series statement. City: Publisher, Year.",
+    "Use this final style when the facts are visible: Bibliographic contributor. Title: Subtitle. Responsibility statement. Edition statement. Series statement. City: Publisher, Year.",
     "In heading, consistently abbreviate a bibliographic volume designation as vol. (Vol. at the start of a sentence), not volume; retain the complete observed number, including any letter suffix. Use an observed ordinal for a numbered edition and abbreviate edition as ed., preserving revision, anniversary, and other meaningful qualifiers. Do not invent an edition number for an unnumbered revised edition. These are display conventions, not permission to abbreviate genuine title words or change the exact supporting words in visibleEvidence.",
     "Keep a numbered publisher series distinct from a volume of a multi-volume work. For an explicitly observed series volume use Series Title, vol. N; for a bare series number use Series Title N, without inventing a volume label. Do not invent a number, contributor role, or series/work relationship. Omit absent details silently rather than adding a missing-volume notice.",
     "Do not split a single stacked title block into title plus series just because it contains a volume line. If the title page presents 'Lexham Geographic Commentary / on the Historical Books / Volume 2: 1 Samuel-Esther', cite that title block as 'Lexham Geographic Commentary on the Historical Books: Volume 2, 1 Samuel-Esther'.",
-    "For a personal author shown as First Name Last Name, invert the author in the final bibliography heading as Last Name, First Name.",
+    "Format contributor as the complete Chicago bibliography contributor statement, using the same name order in heading. Invert the first personal name only when its given-name and family-name boundary is established; keep later contributors in natural order. Preserve complete compound/double surnames, surname particles, suffixes, and initials. The final word is not automatically the surname. Do not split a double surname or reinterpret an explicitly supplied bibliographic name boundary.",
+    "A single historical name, epithet or locative such as 'of [place]' is not a modern given-name/surname pair. Keep such names in their observed order, including an observed saint designation; never move the place to the surname position. If name structure is uncertain, preserve the visible name order and state the uncertainty in warnings rather than guessing a family name. Do not add a fuller name, saint designation, birthplace or identity from memory.",
     "For non-Latin-script personal authors, do not invert the original-script name. Keep the original-script name in visible order and add a romanized Latin-script form in square brackets, for example: 박성덕 [Park Sung-deok].",
     "For every script, the rendered page image is primary; the selectable PDF text below is unverified and may be badly corrupted OCR. Read the visible title page and imprint, not just the cover or text excerpts. Never copy a garbled text-layer spelling over clearly visible image text. If the image is unreadable, leave the field blank rather than guessing.",
     "Read the complete title block across stacked lines, including its subtitle. Distinguish an honoree or dedication from the book's authors/editors. Read names together with their visible responsibility labels; 'Edited by' is not a person's name.",
@@ -185,7 +186,8 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "Read Korean publisher names carefully: 꿈미 is not 꾸밈. Prefer final imprint lines labeled 발행처 over cover logos or production credits. If 도서출판 꿈미, coommi, coommi.org, or coommimall appears, publisher is 도서출판 꿈미.",
     "When visibleEvidence.publisher contains a labeled imprint publisher, copy that exact publisher name into publisher and into the final heading. Do not shorten 도서출판 꿈미 to 꿈미, do not rewrite it as 꾸밈, and do not use a design/production credit as publisher.",
     "If place, publisher, or year are not visible, omit only the missing pieces instead of inventing them.",
-    "Ignore ISBN, copyright boilerplate, library-cataloging blocks, table-of-contents lines, and chapter-title lines.",
+    "Use the title page for title, contributor identity and responsibility; use the imprint for this scanned edition's publication facts. A library-cataloging block for the current volume may corroborate its series name and exact volume designation, including an observed letter suffix. Do not use catalogue access headings as authors, subject headings as titles, or classification/ISBN numbers as volumes. Cataloging must not override a conflicting visible title-page name. If sources conflict, preserve the directly observed title-page identity and warn about the conflict; leave unresolved series/volume facts absent rather than inventing a resolution.",
+    "Ignore ISBN and classification numbers, copyright boilerplate, table-of-contents lines, and chapter-title lines as citation facts.",
     "Return JSON only, with this shape: {\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\",\"visibleEvidence\":{\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\"},\"warnings\":[\"...\"]}.",
     "",
     sourceAuthorHint ? `Filename/author hint for bracketed contributor form only: ${sourceAuthorHint}` : "",
@@ -240,7 +242,18 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     .map(part => part.text).join("");
   const parsed = JSON.parse(responseText || "{}");
   logAiCitationSummary(parsed);
-  return { heading: buildAiCitation(parsed, hints) };
+  const warnings = normalizeCitationWarnings(parsed?.warnings);
+  return {
+    heading: buildAiCitation(parsed, hints),
+    note: warnings.length ? `Please review the citation: ${warnings.join(" ")}` : "",
+  };
+}
+
+function normalizeCitationWarnings(warnings) {
+  return Array.isArray(warnings)
+    ? warnings.filter(warning => typeof warning === "string")
+      .map(warning => compactLogValue(warning)).filter(Boolean).slice(0, 4)
+    : [];
 }
 
 function logAiCitationSummary(parsed) {
@@ -263,9 +276,7 @@ function logAiCitationSummary(parsed) {
       publisher: compactLogValue(evidence.publisher),
       year: compactLogValue(evidence.year),
     },
-    warnings: Array.isArray(parsed.warnings)
-      ? parsed.warnings.map(warning => compactLogValue(warning)).filter(Boolean).slice(0, 4)
-      : [],
+    warnings: normalizeCitationWarnings(parsed.warnings),
   });
 }
 
@@ -309,7 +320,9 @@ function buildAiCitation(parsed, hints = {}) {
 
   const parts = [];
   if (contributor) {
-    parts.push(trimTerminalPeriod(formatChicagoBibliographyAuthors(contributor)));
+    // Contributor already carries the reader's bibliographic name boundaries.
+    // Guessing them again from spaces/commas corrupts compound and historical names.
+    parts.push(trimTerminalPeriod(normalizeContributorName(contributor)));
   }
   if (title) {
     parts.push(trimTerminalPeriod(formatCitationTitle(title)));
@@ -514,15 +527,6 @@ function trimTerminalPeriod(text) {
   return String(text || "").replace(/[.\s]+$/g, "").trim();
 }
 
-function trimAuthorName(text) {
-  return cleanFrontMatterLine(text).replace(/[,;:]+$/g, "");
-}
-
-function punctuateAuthorList(text) {
-  const cleaned = cleanCitationText(text);
-  return /[.!?]$/.test(cleaned) ? cleaned : cleaned + ".";
-}
-
 function formatCitationTitle(title) {
   const cleaned = moveTrailingNonLatinTitleTranslationIntoBrackets(
     mergeSplitNonLatinTitleTranslations(trimTerminalPeriod(title))
@@ -587,128 +591,6 @@ function looksLikeRomanizedTitle(text) {
     /\b[a-z]*(?:yeo|yeong|eong|eon|eo|eu|ae|oe|ui|jeok|jido|mokhoe|ganghae|seolgyo)[a-z]*\b/i.test(cleaned);
 }
 
-function formatChicagoBibliographyAuthors(author) {
-  const cleaned = normalizeEditorRoleLabels(cleanAuthorLine(author));
-  if (!cleaned) return "";
-
-  const names = splitAuthorNames(cleaned)
-    .map(name => normalizeContributorName(name))
-    .filter(Boolean);
-
-  if (names.length === 0) return "";
-
-  if (names.length === 1) {
-    return punctuateAuthorList(trimAuthorName(invertPersonalName(names[0])));
-  }
-
-  const first = trimAuthorName(invertPersonalName(names[0]));
-  const rest = names.slice(1).map(name => trimAuthorName(name));
-
-  let authorList = "";
-  if (rest.length === 1) {
-    authorList = first + ", and " + rest[0];
-  } else {
-    authorList = first + ", " + rest.slice(0, -1).join(", ") + ", and " + rest[rest.length - 1];
-  }
-
-  return punctuateAuthorList(authorList);
-}
-
-function splitAuthorNames(authorText) {
-  const cleaned = cleanAuthorLine(authorText);
-  if (!cleaned) return [];
-
-  const pieces = cleaned
-    .replace(/\s+(?:and|&)\s+/gi, ", ")
-    .split(/\s*,\s*/)
-    .map(piece => trimAuthorName(piece))
-    .filter(Boolean);
-
-  if (looksLikeSingleNonLatinAuthorName(cleaned, pieces)) {
-    return [cleaned];
-  }
-
-  if (pieces.length <= 1) return pieces;
-
-  const names = [];
-  let index = 0;
-  if (pieces.length >= 2 && looksLikeInvertedAuthorPieces(pieces[0], pieces[1])) {
-    names.push(`${pieces[0]}, ${pieces[1]}`);
-    index = 2;
-  }
-
-  for (; index < pieces.length; index++) {
-    if (isEditorRoleToken(pieces[index]) && names.length > 0) {
-      names[names.length - 1] = `${trimAuthorName(names[names.length - 1])}, ${normalizeEditorRoleToken(pieces[index])}`;
-      continue;
-    }
-    names.push(pieces[index]);
-  }
-
-  return names;
-}
-
-function looksLikeSingleNonLatinAuthorName(cleaned, pieces) {
-  if (!containsNonLatinScript(cleaned)) return false;
-  if (pieces.length === 1) return true;
-  if (pieces.length !== 2) return false;
-  if (/\s+(?:and|&)\s+/i.test(cleaned)) return false;
-  return pieces.every(piece => piece.split(/\s+/).filter(Boolean).length <= 3);
-}
-
-function looksLikeInvertedAuthorPieces(lastName, givenNames) {
-  const last = cleanFrontMatterLine(lastName);
-  const given = cleanFrontMatterLine(givenNames);
-  if (!last || !given || /[.;:]/.test(last)) return false;
-  if (!looksLikeSurnamePiece(last)) return false;
-  return given.split(/\s+/).filter(Boolean).length <= 4;
-}
-
-function looksLikeSurnamePiece(text) {
-  const words = cleanFrontMatterLine(text).split(/\s+/).filter(Boolean);
-  if (words.length === 0 || words.length > 4) return false;
-  if (words.some(word => /\.$/.test(word))) return false;
-  if (words.length === 1) return /^\p{Lu}/u.test(words[0]);
-  return words.slice(0, -1).every(word => /^\p{Ll}/u.test(word)) && /^\p{Lu}/u.test(words[words.length - 1]);
-}
-
-function invertPersonalName(name) {
-  const cleaned = trimAuthorName(name);
-  if (!cleaned) return "";
-
-  const role = extractEditorRoleSuffix(cleaned);
-  const nameWithoutRole = role ? role.name : cleaned;
-  if (!nameWithoutRole || nameWithoutRole.includes(",") || containsNonLatinScript(nameWithoutRole)) {
-    return role ? `${nameWithoutRole}, ${role.role}` : nameWithoutRole;
-  }
-
-  const parts = nameWithoutRole.split(/\s+/);
-  if (parts.length < 2) return role ? `${nameWithoutRole}, ${role.role}` : nameWithoutRole;
-
-  const suffixes = ["Jr.", "Jr", "Sr.", "Sr", "II", "III", "IV", "V"];
-  let suffix = "";
-  if (suffixes.includes(parts[parts.length - 1])) {
-    suffix = parts.pop();
-  }
-
-  const last = parts.pop();
-  const given = parts.join(" ");
-  const inverted = last + ", " + given + (suffix ? ", " + suffix : "");
-  return role ? `${inverted}, ${role.role}` : inverted;
-}
-
-function extractEditorRoleSuffix(name) {
-  const cleaned = cleanCitationText(name);
-  const match = cleaned.match(/^(.*?),\s*(eds?\.?)$/i);
-  if (!match) {
-    return null;
-  }
-  return {
-    name: trimAuthorName(match[1]),
-    role: normalizeEditorRoleToken(match[2]),
-  };
-}
-
 function containsNonLatinScript(text) {
   const cleaned = cleanFrontMatterLine(text);
   return /[\p{L}]/u.test(cleaned) &&
@@ -765,12 +647,10 @@ function normalizeResponsibilityStatement(text, evidenceText = "") {
 }
 
 function normalizeAiCitationText(text) {
-  const cleaned = normalizeEditorRoleLabels(cleanCitationText(text).replace(/\b(by|par)\b\s+([^.;()]*?)(\s*)(?=[.;()]|$)/giu, (_match, connector, names, spacing) => {
+  return normalizeEditorRoleLabels(cleanCitationText(text).replace(/\b(by|par)\b\s+([^.;()]*?)(\s*)(?=[.;()]|$)/giu, (_match, connector, names, spacing) => {
     const normalizedConnector = /^par$/i.test(connector) ? "par" : "by";
     return `${normalizedConnector} ${normalizeContributorName(names)}${spacing}`;
   }));
-
-  return normalizeLeadingInvertedInitialAuthorHeading(cleaned);
 }
 
 function normalizeEditorRoleLabels(text) {
@@ -782,15 +662,6 @@ function normalizeEditorRoleLabels(text) {
   return cleanCitationText(cleaned.replace(/,\s*(?:(?:general|series)\s+)?editors?\b\.?/giu, match => {
     return `, ${/\beditors\b/i.test(match) ? "eds." : "ed."}`;
   }));
-}
-
-function isEditorRoleToken(text) {
-  return /^(?:(?:general|series)\s+)?editors?\.?$/i.test(cleanCitationText(text)) ||
-    /^eds?\.?$/i.test(cleanCitationText(text));
-}
-
-function normalizeEditorRoleToken(text) {
-  return /\beditors\b|^eds/i.test(cleanCitationText(text)) ? "eds." : "ed.";
 }
 
 function stripNonTitleLatinBracketedEquivalents(text) {
@@ -873,34 +744,6 @@ function normalizeContributorName(text) {
     ));
 }
 
-function normalizeLeadingInvertedInitialAuthorHeading(text) {
-  const cleaned = cleanCitationText(text);
-  const leading = splitLeadingInvertedInitialAuthor(cleaned);
-  if (!leading) {
-    return cleaned;
-  }
-
-  return cleanCitationText(`${leading.author} ${leading.rest}`);
-}
-
-function splitLeadingInvertedInitialAuthor(text) {
-  const cleaned = cleanCitationText(text);
-  const match = cleaned.match(/^([\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}][\p{L}'’-]+){0,3}),\s*(?:and\s+)?(((?:[\p{Lu}][\p{L}'’-]*\.?\s+){0,3}[A-Z]\.))\s+(.+)$/u);
-  if (!match) {
-    return null;
-  }
-
-  const rest = cleanCitationText(match[4]);
-  if (!/^[`'‘’"“”]?\p{Lu}/u.test(rest)) {
-    return null;
-  }
-
-  return {
-    author: cleanCitationText(`${match[1]}, ${match[2]}`),
-    rest,
-  };
-}
-
 function stripNameCredentials(text) {
   let cleaned = cleanCitationText(text)
     .replace(/^[`'‘’"“”]+/g, "")
@@ -945,17 +788,12 @@ function cleanFrontMatterLine(text) {
 }
 
 function cleanAuthorLine(text) {
-  return stripNameCredentials(repairSplitInitialSurname(cleanFrontMatterLine(text)
+  return stripNameCredentials(cleanFrontMatterLine(text)
     .replace(/^by\s+/i, "")
     .replace(/^author\s*:\s*/i, "")
     .replace(/^(?:지은이|저자|글쓴이|옮긴이|역자|번역)\s*[:：]?\s*/u, "")
-    .replace(/\s+(?:지음|저|著)\s*$/u, "")))
+    .replace(/\s+(?:지음|저|著)\s*$/u, ""))
     .trim();
-}
-
-function repairSplitInitialSurname(text) {
-  return cleanFrontMatterLine(text)
-    .replace(/\b([A-Z]\.?)\s+(?:and|&)\s+(\p{Lu}[\p{L}'’-]+)(?=\s*(?:$|[,.;:)]))/gu, "$1 $2");
 }
 
 function cleanCitationText(text) {
