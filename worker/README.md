@@ -182,7 +182,7 @@ No fresh AI scan or patron download was run; old links and services are unchange
 
 ## Local check
 
-First-contributor formatting (2026-10-23, not yet deployed): the existing metadata
+First-contributor formatting (released 2026-10-23): the existing metadata
 scan returns optional observed `firstContributor` name components for the first
 leading modern Latin-script contributor. The generator may use these only for
 Short Display surname-first formatting when they match the citation's complete
@@ -192,6 +192,12 @@ without changing the bibliography or note. The same request must return the full
 title including its subtitle, matching the title span in the heading. No extra
 page scan, provider call, model change or new storage; mocked tests exercise the
 response handoff, not fresh reading accuracy.
+Source `f0b27da` is live as `4ce14a2c-770d-4504-ba69-59e0a8da6e79` at 100%.
+All 52 Worker and 43 generator checks pass. Health/auth/CORS pass; binding names,
+non-secret variables and runtime metadata match the prior version. The deployment
+check's expected auth status was corrected from 403 to the existing 401 contract;
+no runtime correction was necessary. Generator `a63b622` is published and matches
+the tested HTML. No fresh scan, PDF request or original-service change.
 
 Title italics update (2026-10-22): `/suggest-heading` also returns `title`, using
 the separately supported title already present in the existing AI response.
