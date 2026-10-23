@@ -182,6 +182,17 @@ No fresh AI scan or patron download was run; old links and services are unchange
 
 ## Local check
 
+First-contributor formatting (2026-10-23, not yet deployed): the existing metadata
+scan returns optional observed `firstContributor` name components for the first
+leading modern Latin-script contributor. The generator may use these only for
+Short Display surname-first formatting when they match the citation's complete
+first name. Compound family names stay whole; historical/locative, corporate,
+non-Latin and uncertain names stay unsplit. Missing/invalid components return null,
+without changing the bibliography or note. The same request must return the full
+title including its subtitle, matching the title span in the heading. No extra
+page scan, provider call, model change or new storage; mocked tests exercise the
+response handoff, not fresh reading accuracy.
+
 Title italics update (2026-10-22): `/suggest-heading` also returns `title`, using
 the separately supported title already present in the existing AI response.
 No prompt, schema, model, provider call count or citation-heading change. Missing,

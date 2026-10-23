@@ -74,6 +74,7 @@ test("missing AI key leaves citation unfilled even with clean embedded text", as
   assert.equal(result.source, "unavailable");
   assert.equal(result.heading, "");
   assert.equal(result.title, "");
+  assert.equal(result.firstContributor, null);
   assert.equal(result.geminiCallCount, 0);
 });
 
@@ -195,6 +196,89 @@ test("a primary full heading stays authoritative while title is independently re
   assert.equal(result.heading, heading);
   assert.equal(result.title, "The Separately Read Title: With Its Subtitle");
   assert.equal(result.geminiCallCount, 1);
+});
+
+test("first contributor name components reuse the existing scan without rewriting the heading", async () => {
+  for (const [contributor, firstContributor] of [
+    ["Scott J. Hafemann and Paul R. House, eds.", { givenNames: "Scott J.", familyName: "Hafemann", suffix: "" }],
+    ["García Márquez, Gabriel", { givenNames: "Gabriel", familyName: "García Márquez", suffix: "" }],
+    ["de la Cruz, Juana Inés", { givenNames: "Juana Inés", familyName: "de la Cruz", suffix: "" }],
+    ["Smith, John, Jr.", { givenNames: "John", familyName: "Smith", suffix: "Jr." }],
+  ]) {
+    const heading = `${contributor.replace(/\.$/, "")}. A Test Work: Its Subtitle.`;
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      parsedAiResponse: {
+        contributor, firstContributor, title: "A Test Work: Its Subtitle", heading,
+        visibleEvidence: { contributor, title: "A Test Work Its Subtitle" },
+      },
+    });
+    assert.deepEqual(result.firstContributor, firstContributor);
+    assert.equal(result.heading, heading);
+    assert.equal(result.title, "A Test Work: Its Subtitle");
+    assert.equal(result.geminiCallCount, 1);
+  }
+});
+
+test("missing, uncertain, malformed or unsupported name components stay absent", async () => {
+  const valid = { givenNames: "Jane", familyName: "Smith", suffix: "" };
+  for (const firstContributor of [
+    undefined, null, "Jane Smith", [valid], {}, { ...valid, givenNames: "" },
+    { ...valid, familyName: " " }, { ...valid, givenNames: 123 },
+    { ...valid, familyName: ["Smith"] }, { givenNames: "Jane", familyName: "Smith" },
+    { ...valid, suffix: null }, { ...valid, givenNames: "수인", familyName: "이" },
+  ]) {
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      parsedAiResponse: {
+        contributor: "Jane Smith", firstContributor, title: "A Test Work",
+        visibleEvidence: { contributor: "Jane Smith", title: "A Test Work" },
+      },
+    });
+    assert.equal(result.firstContributor, null);
+    assert.equal(result.geminiCallCount, 1);
+  }
+  const unsupported = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    parsedAiResponse: {
+      contributor: "Jane Smith", firstContributor: valid, title: "A Test Work",
+      visibleEvidence: { title: "A Test Work" },
+    },
+  });
+  assert.equal(unsupported.firstContributor, null);
+  assert.equal(unsupported.heading, "");
+});
+
+test("first-contributor structure is normalized once and historical names remain unsplit", async () => {
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    parsedAiResponse: {
+      contributor: "Jane M. Smith", title: "A Test Work",
+      firstContributor: { givenNames: " Jane  M. ", familyName: " Smith ", suffix: " ", unused: "ignored" },
+      visibleEvidence: { contributor: "Jane M. Smith", title: "A Test Work" },
+    },
+  });
+  assert.deepEqual(result.firstContributor, { givenNames: "Jane M.", familyName: "Smith", suffix: "" });
+  for (const contributor of ["Clement of Alexandria", "St. Augustine of Hippo", "A Scholarly Society"]) {
+    const historical = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      parsedAiResponse: {
+        contributor, title: "A Test Work", firstContributor: null,
+        visibleEvidence: { contributor, title: "A Test Work" },
+      },
+    });
+    assert.equal(historical.firstContributor, null);
+    assert.equal(historical.heading, `${contributor}. A Test Work.`);
+  }
+  const prompt = result.geminiRequestBody.contents[0].parts[0].text;
+  assert.match(prompt, /first leading modern Latin-script personal contributor/);
+  assert.match(prompt, /visibleEvidence\.contributor as support/);
+  assert.match(prompt, /compound\/double family name and its particles whole/);
+  assert.match(prompt, /Return null for historical\/locative names, corporate contributors, non-Latin names/);
+  assert.match(prompt, /Never use a later editor\/translator or expand initials/);
+  assert.match(prompt, /complete title INCLUDING its subtitle, identical in wording and punctuation/);
+  assert.match(prompt, /Exclude separate series, contributor credits, edition and imprint/);
+  assert.doesNotMatch(prompt, /Hafemann|House|García Márquez/);
 });
 
 test("name structure belongs to the page reader, not a last-word surname fallback", async () => {

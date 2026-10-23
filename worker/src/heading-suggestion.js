@@ -16,7 +16,7 @@ export async function handleSuggestHeading(request, env, helpers) {
   const sourceTitleHint = normalizeSourceTitleHint(body.sourceTitleHint);
   if (lines.length === 0 && images.length === 0) {
     return helpers.json({
-      heading: "", title: "",
+      heading: "", title: "", firstContributor: null,
       source: "none",
       note: "No usable front-matter text was provided.",
     }, request, env);
@@ -24,7 +24,7 @@ export async function handleSuggestHeading(request, env, helpers) {
 
   if (!env.GEMINI_API_KEY) {
     return helpers.json({
-      heading: "", title: "", source: "unavailable",
+      heading: "", title: "", firstContributor: null, source: "unavailable",
       note: "The metadata reader is not configured. Enter the citation manually; chapter links can still be generated.",
     }, request, env);
   }
@@ -46,7 +46,7 @@ export async function handleSuggestHeading(request, env, helpers) {
       finishReason: error.finishReason || null,
     });
     return helpers.json({
-      heading: "", title: "", source: "unavailable",
+      heading: "", title: "", firstContributor: null, source: "unavailable",
       note: "The metadata scan failed. Try the scan again or enter the citation manually; chapter links can still be generated.",
     }, request, env);
   }
@@ -146,9 +146,10 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "Do not split a single stacked title block into title plus series just because it contains a volume line. If the title page presents 'Lexham Geographic Commentary / on the Historical Books / Volume 2: 1 Samuel-Esther', cite that title block as 'Lexham Geographic Commentary on the Historical Books: Volume 2, 1 Samuel-Esther'.",
     "Format contributor as the complete Chicago bibliography contributor statement, using the same name order in heading. Invert the first personal name only when its given-name and family-name boundary is established; keep later contributors in natural order. Preserve complete compound/double surnames, surname particles, suffixes, and initials. The final word is not automatically the surname. Do not split a double surname or reinterpret an explicitly supplied bibliographic name boundary.",
     "A single historical name, epithet or locative such as 'of [place]' is not a modern given-name/surname pair. Keep such names in their observed order, including an observed saint designation; never move the place to the surname position. If name structure is uncertain, preserve the visible name order and state the uncertainty in warnings rather than guessing a family name. Do not add a fuller name, saint designation, birthplace or identity from memory.",
+    "Also return firstContributor as {givenNames, familyName, suffix} for the first leading modern Latin-script personal contributor, using that same person's exact observed name components and visibleEvidence.contributor as support. Keep a compound/double family name and its particles whole; suffix is an empty string when absent. This supports surname-first Short Display formatting only. Return null for historical/locative names, corporate contributors, non-Latin names, or an uncertain name boundary. Never use a later editor/translator or expand initials or names from memory.",
     "For non-Latin-script personal authors, do not invert the original-script name. Keep the original-script name in visible order and add a romanized Latin-script form in square brackets, for example: 박성덕 [Park Sung-deok].",
     "For every script, the rendered page image is primary; the selectable PDF text below is unverified and may be badly corrupted OCR. Read the visible title page and imprint, not just the cover or text excerpts. Never copy a garbled text-layer spelling over clearly visible image text. If the image is unreadable, leave the field blank rather than guessing.",
-    "Read the complete title block across stacked lines, including its subtitle. Distinguish an honoree or dedication from the book's authors/editors. Read names together with their visible responsibility labels; 'Edited by' is not a person's name.",
+    "Read the complete title block across stacked lines, including its subtitle. The title field is the complete title INCLUDING its subtitle, identical in wording and punctuation to its displayed title span in heading; it must not contain only the main title when heading includes a subtitle. Exclude separate series, contributor credits, edition and imprint text from that title span. Distinguish an honoree or dedication from the book's authors/editors. Read names together with their visible responsibility labels; 'Edited by' is not a person's name.",
     "Use the author name exactly as it appears on the title page. Do not expand, correct, or formalize it from copyright text; for example, if the title page says Tim Arnold and the copyright page says Timothy Arnold, use Tim Arnold.",
     "For non-Latin-script contributor names or titles, keep the visible non-Latin text first. If a visible English or Latin-script equivalent is also present, add it immediately after in square brackets, for example: 해돈 W. 로빈슨 [Haddon W. Robinson]. 성경 강해설교 강해설교 전개와 전달 [Biblical Preaching The Development and Delivery of Expository Messages].",
     "For non-Latin-script contributor names, include only a romanized contributor name in square brackets. Do not use a translated title, filename, URL slug, MMS ID, or other source identifier as the bracketed contributor form.",
@@ -188,7 +189,7 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "If place, publisher, or year are not visible, omit only the missing pieces instead of inventing them.",
     "Use the title page for title, contributor identity and responsibility; use the imprint for this scanned edition's publication facts. A library-cataloging block for the current volume may corroborate its series name and exact volume designation, including an observed letter suffix. Do not use catalogue access headings as authors, subject headings as titles, or classification/ISBN numbers as volumes. Cataloging must not override a conflicting visible title-page name. If sources conflict, preserve the directly observed title-page identity and warn about the conflict; leave unresolved series/volume facts absent rather than inventing a resolution.",
     "Ignore ISBN and classification numbers, copyright boilerplate, table-of-contents lines, and chapter-title lines as citation facts.",
-    "Return JSON only, with this shape: {\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\",\"visibleEvidence\":{\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\"},\"warnings\":[\"...\"]}.",
+    "Return JSON only, with this shape: {\"contributor\":\"...\",\"firstContributor\":null,\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\",\"visibleEvidence\":{\"contributor\":\"...\",\"title\":\"...\",\"responsibilityStatement\":\"...\",\"series\":\"...\",\"seriesNumber\":\"...\",\"edition\":\"...\",\"city\":\"...\",\"publisher\":\"...\",\"year\":\"...\",\"heading\":\"...\"},\"warnings\":[\"...\"]}. Replace firstContributor null with the name-components object only when supported as specified above.",
     "",
     sourceAuthorHint ? `Filename/author hint for bracketed contributor form only: ${sourceAuthorHint}` : "",
     sourceTitleHint ? `Filename/title hint for bracketed English title only: ${sourceTitleHint}` : "",
@@ -244,14 +245,29 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
   logAiCitationSummary(parsed);
   const warnings = normalizeCitationWarnings(parsed?.warnings);
   const heading = buildAiCitation(parsed, hints);
+  const evidence = normalizeEvidenceMap(parsed.visibleEvidence || parsed.evidence || {});
   const supportedTitle = heading && typeof parsed?.title === "string"
-    ? supportedAiField(parsed, normalizeEvidenceMap(parsed.visibleEvidence || parsed.evidence || {}), "title")
+    ? supportedAiField(parsed, evidence, "title")
     : "";
   return {
     heading,
     title: supportedTitle ? formatCitationTitle(normalizeTitleField(supportedTitle, hints?.sourceTitleHint)) : "",
+    firstContributor: heading ? normalizeFirstContributor(parsed, evidence) : null,
     note: warnings.length ? `Please review the citation: ${warnings.join(" ")}` : "",
   };
+}
+
+function normalizeFirstContributor(parsed, evidence) {
+  const name = parsed.firstContributor;
+  if (!name || typeof name !== "object" || Array.isArray(name) ||
+      typeof parsed.contributor !== "string" || !parsed.contributor.trim() || !evidence.contributor ||
+      !["givenNames", "familyName", "suffix"].every(key => typeof name[key] === "string")) return null;
+  const normalized = Object.fromEntries(["givenNames", "familyName", "suffix"]
+    .map(key => [key, name[key].trim().replace(/\s+/g, " ")]));
+  if (![normalized.givenNames, normalized.familyName].every(value =>
+    /\p{Script=Latin}/u.test(value) && /^[\p{Script=Latin}\p{M} .’'\-]+$/u.test(value))) return null;
+  if (normalized.suffix && !/^[\p{Script=Latin}\p{M} .’'\-]+$/u.test(normalized.suffix)) return null;
+  return normalized;
 }
 
 function normalizeCitationWarnings(warnings) {
