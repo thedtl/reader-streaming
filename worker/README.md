@@ -182,6 +182,21 @@ No fresh AI scan or patron download was run; old links and services are unchange
 
 ## Local check
 
+Edition retention (prepared 2026-11-04): the same scan now returns its supported
+`edition` separately for the generator's short display. Keep the current copy's
+observed edition, including revised/expanded and non-English forms; do not infer
+one from a printing, year, volume or cited source edition. If the polished heading
+omits it, insert the supported designation at an identifiable title/responsibility
+or publication boundary, preserving the heading's names and title. Equivalent
+abbreviations do not duplicate it. If no safe boundary exists, retain the heading
+and explicitly request manual edition placement. Missing facts stay absent.
+No extra AI call or image read. All 59 Worker checks pass, including 51 metadata
+checks; these exercise the handoff and formatting, not fresh model-reading accuracy.
+Syntax and Wrangler dry-run packaging pass using the already bundled pdf-lib
+1.17.1 via a temporary symlink, without installing dependencies or changing the lockfile.
+The dry-run could not write Wrangler's default external log; packaging itself passed.
+Not deployed yet.
+
 First-contributor formatting (released 2026-10-23): the existing metadata
 scan returns optional observed `firstContributor` name components for the first
 leading modern Latin-script contributor. The generator may use these only for

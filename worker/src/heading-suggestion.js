@@ -16,7 +16,7 @@ export async function handleSuggestHeading(request, env, helpers) {
   const sourceTitleHint = normalizeSourceTitleHint(body.sourceTitleHint);
   if (lines.length === 0 && images.length === 0) {
     return helpers.json({
-      heading: "", title: "", firstContributor: null,
+      heading: "", title: "", edition: "", firstContributor: null,
       source: "none",
       note: "No usable front-matter text was provided.",
     }, request, env);
@@ -24,7 +24,7 @@ export async function handleSuggestHeading(request, env, helpers) {
 
   if (!env.GEMINI_API_KEY) {
     return helpers.json({
-      heading: "", title: "", firstContributor: null, source: "unavailable",
+      heading: "", title: "", edition: "", firstContributor: null, source: "unavailable",
       note: "The metadata reader is not configured. Enter the citation manually; chapter links can still be generated.",
     }, request, env);
   }
@@ -46,7 +46,7 @@ export async function handleSuggestHeading(request, env, helpers) {
       finishReason: error.finishReason || null,
     });
     return helpers.json({
-      heading: "", title: "", firstContributor: null, source: "unavailable",
+      heading: "", title: "", edition: "", firstContributor: null, source: "unavailable",
       note: "The metadata scan failed. Try the scan again or enter the citation manually; chapter links can still be generated.",
     }, request, env);
   }
@@ -173,6 +173,7 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
     "Normalize OCR all-caps surnames in responsibility names, such as Laure SOLIGNAC, to normal name capitalization. Omit trailing credential initials and religious/order credentials such as Ph.D., S.J., O.P., and OFM Cap. from all contributor names unless the credential is part of a title.",
     "Do not put title, subtitle, series, or edition text in contributor. For example, if a title page says 'ADULT LEARNING / Linking Theory and Practice / Second Edition / Laura L. Bierema, Monica Fedeli, Sharan B. Merriam', contributor is the three named people, title is Adult Learning: Linking Theory and Practice, and edition is Second Edition.",
     "An edition statement such as Second Edition is never the title by itself; put it in edition and keep looking for the actual title.",
+    "Retain this scanned book's visibly identified edition in both edition and heading, including an explicitly stated first edition, revised/expanded designation, or non-English edition wording. Keep edition separate from volume. A printing/impression number, publication year, copyright date, catalogue of other editions, or source edition cited by a translation is not this copy's edition. Never infer a missing edition or promote a printing into one; leave edition empty when not established. Use the same display-ready edition designation in heading and edition, with the original supporting wording in visibleEvidence.edition.",
     "Extract series title and series volume/number when they are clearly visible as a separate series statement, especially for commentary series or multi-volume sets. Do not move words from the displayed title block into series.",
     "Look for publication facts on copyright/title-page verso pages and final imprint/copyright pages: publisher name, publication place, and publication year.",
     "Use the copyright/publication statement for this book, not the copyright year of quoted scripture, licensed translations, illustrations, or other reproduced material. Read the full statement to identify whose date it is; do not select a year merely because it is the first, last, or largest number. A street address or postal district is not a person's name or part of the publication city.",
@@ -249,9 +250,16 @@ async function suggestHeadingWithGemini(lines, images, hints, env) {
   const supportedTitle = heading && typeof parsed?.title === "string"
     ? supportedAiField(parsed, evidence, "title")
     : "";
+  const title = supportedTitle ? formatCitationTitle(normalizeTitleField(supportedTitle, hints?.sourceTitleHint)) : "";
+  const edition = heading && typeof parsed?.edition === "string"
+    ? normalizeEditionStatement(supportedAiField(parsed, evidence, "edition")) : "";
+  if (edition && !headingIncludesEdition(heading, edition, title)) {
+    warnings.push("The edition was read but could not be safely placed in the citation. Add the edition manually.");
+  }
   return {
     heading,
-    title: supportedTitle ? formatCitationTitle(normalizeTitleField(supportedTitle, hints?.sourceTitleHint)) : "",
+    title,
+    edition,
     firstContributor: heading ? normalizeFirstContributor(parsed, evidence) : null,
     note: warnings.length ? `Please review the citation: ${warnings.join(" ")}` : "",
   };
@@ -316,12 +324,17 @@ function buildAiCitation(parsed, hints = {}) {
   // the PDF's hidden OCR layer. In particular an edition is not a book title.
   if (!supportedContributor || !supportedTitle || looksLikeEditionLine(supportedTitle)) return "";
   const publicationFields = extractSupportedPublicationFields(parsed, evidence);
+  const edition = typeof parsed.edition === "string"
+    ? normalizeEditionStatement(supportedAiField(parsed, evidence, "edition")) : "";
   const fallbackHeading = normalizeAiCitationText(
     reconcileAiHeadingPublication(supportedAiHeading(parsed, evidence), publicationFields)
   );
 
   if (fallbackHeading) {
-    return cleanCitationText(fallbackHeading);
+    return retainHeadingEdition(fallbackHeading, edition,
+      formatCitationTitle(normalizeTitleField(supportedTitle, sourceTitleHint)),
+      supportedAiField(parsed, evidence, "responsibilityStatement", ["responsibility"]),
+      publicationFields);
   }
 
   const contributor = normalizeContributorField(
@@ -336,7 +349,6 @@ function buildAiCitation(parsed, hints = {}) {
   );
   const series = stripNonTitleLatinBracketedEquivalents(supportedAiField(parsed, evidence, "series"));
   const seriesNumber = supportedAiField(parsed, evidence, "seriesNumber");
-  const edition = normalizeEditionStatement(supportedAiField(parsed, evidence, "edition"));
   const { city, publisher, year } = publicationFields;
 
   const parts = [];
@@ -487,9 +499,45 @@ function normalizeTitleField(title, sourceTitleHint = "") {
 
 function normalizeEditionStatement(edition) {
   const cleaned = cleanCitationText(edition);
+  if (/^(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?)\s+)?(?:printing|impression|reprint)\.?$/i.test(cleaned)) return "";
   if (/^(?:초판\s*)?\d+\s*쇄$/u.test(cleaned)) return "";
   if (/^초판\s*\d+\s*쇄\s*발행(?:일)?/u.test(cleaned)) return "";
   return cleaned;
+}
+
+function editionDisplayKey(value) {
+  // Compare display abbreviations only; keep the supported title and names intact.
+  return cleanCitationText(value).toLocaleLowerCase("en")
+    .replace(/\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth)\b/g,
+      word => String(["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth"].indexOf(word) + 1))
+    .replace(/\b(\d+)(?:st|nd|rd|th)\b/g, "$1")
+    .replace(/\b(?:edition|ed)\b/g, "ed").replace(/\b(?:revised|rev)\b/g, "rev")
+    .replace(/[\p{P}\s]+/gu, " ").trim();
+}
+
+function headingIncludesEdition(heading, edition, title) {
+  const titleAt = title ? heading.indexOf(title) : -1;
+  const uniqueTitle = titleAt >= 0 && titleAt === heading.lastIndexOf(title);
+  const tail = uniqueTitle ? heading.slice(titleAt + title.length) : heading;
+  return ` ${editionDisplayKey(tail)} `.includes(` ${editionDisplayKey(edition)} `);
+}
+
+function retainHeadingEdition(heading, edition, title, responsibility, publicationFields) {
+  if (!edition || headingIncludesEdition(heading, edition, title)) return heading;
+  const titleAt = title ? heading.indexOf(title) : -1;
+  const uniqueTitle = titleAt >= 0 && titleAt === heading.lastIndexOf(title);
+  let boundary = uniqueTitle ? titleAt + title.length : -1;
+  const responsibilityAt = responsibility ? heading.indexOf(responsibility, boundary) : -1;
+  if (boundary >= 0 && responsibilityAt >= boundary) boundary = responsibilityAt + responsibility.length;
+  if (boundary < 0) {
+    const publication = buildPublicationBlock(publicationFields.city, publicationFields.publisher, publicationFields.year);
+    boundary = publication ? heading.lastIndexOf(publication) : -1;
+  }
+  // If the polished heading has no identifiable span, preserve it and return the
+  // observed edition separately rather than reconstructing its names or title.
+  if (boundary < 0) return heading;
+  const before = heading.slice(0, boundary).trim();
+  return cleanCitationText(`${before}${/[.!?]$/.test(before) ? " " : ". "}${trimTerminalPeriod(edition)}. ${heading.slice(boundary).replace(/^[.\s]+/u, "")}`);
 }
 
 function normalizeEvidenceMap(rawEvidence) {

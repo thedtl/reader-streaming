@@ -1041,6 +1041,113 @@ test("existing metadata read requests consistent Chicago display without changin
   assert.equal(Object.hasOwn(result, "downloadVolume"), false);
 });
 
+test("supported editions reach the response and an otherwise complete heading without another scan", async () => {
+  for (const edition of ["Second Edition", "Revised and Expanded Edition", "3e édition", "개정판", "First edition"]) {
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" }, lines: [],
+      images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
+      parsedAiResponse: {
+        contributor: "Smith, Jane", title: "A Test Work", edition,
+        series: "A Series", seriesNumber: "40B", city: "London", publisher: "Example Press", year: "2025",
+        heading: "Smith, Jane. A Test Work. A Series, vol. 40B. London: Example Press, 2025.",
+        visibleEvidence: { contributor: "Jane Smith", title: "A Test Work", edition,
+          series: "A Series", seriesNumber: "40B", city: "London", publisher: "Example Press", year: "2025" },
+      },
+    });
+    assert.equal(result.edition, edition);
+    assert.equal(result.heading, `Smith, Jane. A Test Work. ${edition}. A Series, vol. 40B. London: Example Press, 2025.`);
+    assert.equal(result.geminiCallCount, 1);
+    const prompt = result.geminiRequestBody.contents[0].parts[0].text;
+    assert.match(prompt, /printing\/impression number/);
+    assert.match(prompt, /source edition cited by a translation is not this copy's edition/);
+    assert.match(prompt, /Never infer a missing edition/);
+  }
+});
+
+test("equivalent edition abbreviations do not duplicate an edition or italicize it as title", async () => {
+  for (const [edition, display] of [["Second Edition", "2nd ed."], ["Revised Edition", "rev. ed."], ["3e édition", "3e édition"]]) {
+    const heading = `Smith, Jane. A Test Work: Its Subtitle. ${display} London: Example Press, 2025.`;
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      parsedAiResponse: {
+        contributor: "Smith, Jane", title: "A Test Work: Its Subtitle", edition, heading,
+        visibleEvidence: { contributor: "Jane Smith", title: "A Test Work: Its Subtitle", edition },
+      },
+    });
+    assert.equal(result.heading, heading);
+    assert.equal(result.title, "A Test Work: Its Subtitle");
+    assert.equal(result.edition, edition);
+  }
+});
+
+test("a supported edition follows contributor responsibility without changing its text", async () => {
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    parsedAiResponse: {
+      contributor: "Augustine", title: "Confessions", edition: "2nd ed.",
+      responsibilityStatement: "Translated by Jane Smith",
+      heading: "Augustine. Confessions. Translated by Jane Smith. London: Example Press, 2025.",
+      visibleEvidence: { contributor: "Augustine", title: "Confessions", edition: "Second Edition", responsibilityStatement: "Translated by Jane Smith" },
+    },
+  });
+  assert.equal(result.heading, "Augustine. Confessions. Translated by Jane Smith. 2nd ed. London: Example Press, 2025.");
+});
+
+test("edition insertion preserves terminal title punctuation", async () => {
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    parsedAiResponse: {
+      contributor: "Smith, Jane", title: "Why Read?", edition: "2nd ed.",
+      heading: "Smith, Jane. Why Read? London: Example Press, 2025.",
+      visibleEvidence: { contributor: "Jane Smith", title: "Why Read?", edition: "Second Edition" },
+    },
+  });
+  assert.equal(result.heading, "Smith, Jane. Why Read? 2nd ed. London: Example Press, 2025.");
+});
+
+test("a title mentioning an edition does not stand in for the copy's edition statement", async () => {
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    parsedAiResponse: {
+      contributor: "Smith, Jane", title: "The Second Edition of Paradise Lost", edition: "Second Edition",
+      heading: "Smith, Jane. The Second Edition of Paradise Lost. London: Example Press, 2025.",
+      visibleEvidence: { contributor: "Jane Smith", title: "The Second Edition of Paradise Lost", edition: "Second Edition" },
+    },
+  });
+  assert.equal(result.heading, "Smith, Jane. The Second Edition of Paradise Lost. Second Edition. London: Example Press, 2025.");
+});
+
+test("absent, malformed, unsupported or printing-only editions are not supplied as editions", async () => {
+  for (const [edition, evidence] of [[undefined, undefined], [null, undefined], [{ number: 2 }, "Second Edition"], ["Second Edition", undefined], ["Third printing", "Third printing"], ["초판 2쇄", "초판 2쇄 발행일 2023년"]]) {
+    const heading = "Smith, Jane. A Test Work. London: Example Press, 2025.";
+    const result = await requestSuggestion({
+      env: { GEMINI_API_KEY: "fake" },
+      parsedAiResponse: {
+        contributor: "Smith, Jane", title: "A Test Work", edition, heading,
+        visibleEvidence: { contributor: "Jane Smith", title: "A Test Work", edition: evidence },
+      },
+    });
+    assert.equal(result.edition, "");
+    assert.equal(result.heading, heading);
+    assert.equal(result.geminiCallCount, 1);
+  }
+});
+
+test("an edition with no safe heading boundary stays visible for manual review", async () => {
+  const heading = "Smith, Jane. A Differently Read Title. Example Press, 2025.";
+  const result = await requestSuggestion({
+    env: { GEMINI_API_KEY: "fake" },
+    parsedAiResponse: {
+      contributor: "Jane Smith", title: "A Test Work", edition: "2nd ed.", heading,
+      visibleEvidence: { contributor: "Jane Smith", title: "A Test Work", edition: "Second Edition" },
+    },
+  });
+  assert.equal(result.heading, heading);
+  assert.equal(result.edition, "2nd ed.");
+  assert.match(result.note, /edition was read but could not be safely placed/);
+  assert.equal(result.geminiCallCount, 1);
+});
+
 test("citation cleanup preserves title dates and bracketed publication dates, not page locators", async () => {
   const heading = "Ward, W. Reginald, and Richard P. Heitzenrater, eds. Collected Letters (1848). Vol. 2. London: Example Press, [1990].";
   const result = await requestSuggestion({
