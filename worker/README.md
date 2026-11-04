@@ -182,7 +182,7 @@ No fresh AI scan or patron download was run; old links and services are unchange
 
 ## Local check
 
-Edition retention (prepared 2026-11-04): the same scan now returns its supported
+Edition retention (released 2026-11-04): the same scan now returns its supported
 `edition` separately for the generator's short display. Keep the current copy's
 observed edition, including revised/expanded and non-English forms; do not infer
 one from a printing, year, volume or cited source edition. If the polished heading
@@ -194,8 +194,12 @@ No extra AI call or image read. All 59 Worker checks pass, including 51 metadata
 checks; these exercise the handoff and formatting, not fresh model-reading accuracy.
 Syntax and Wrangler dry-run packaging pass using the already bundled pdf-lib
 1.17.1 via a temporary symlink, without installing dependencies or changing the lockfile.
-The dry-run could not write Wrangler's default external log; packaging itself passed.
-Not deployed yet.
+Worker source `c748230` is live as version
+`a4dc8daa-645f-4afc-a2ea-832ef2a7a05c` at 100%. All 10 binding definitions,
+runtime compatibility/usage model and handlers match the prior deployed version.
+Health, missing-password rejection, Pages CORS and absent ToC bridge checks pass.
+No fresh metadata scan, PDF processing, new credentials or stable-service changes.
+Temporary packaging files and the dependency symlink were removed after verification.
 
 First-contributor formatting (released 2026-10-23): the existing metadata
 scan returns optional observed `firstContributor` name components for the first
