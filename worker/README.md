@@ -21,7 +21,8 @@ Set these as Worker secrets, not as committed files:
 - `STAFF_PASSWORD`: staff-only password for link generation routes.
 - `SLICER_SHARED_SECRET`: existing slicer credential reused by the new copy;
   original secret bindings and services remain unchanged.
-- `GEMINI_API_KEY`: existing citation-suggestion feature, not OCR or ToC processing.
+- `OPENAI_API_KEY`: existing experimental bookmarker credential, provided as a
+  Worker secret for citation suggestions; never sent to the browser.
 
 For a quick short-lived smoke test only, `DROPBOX_ACCESS_TOKEN` can be used
 instead of the three Dropbox refresh-token secrets. The refresh-token setup is
@@ -76,6 +77,21 @@ reader works against the temporary chapter-only PDF, not the source PDF's page
 numbers.
 
 ## Citation metadata
+
+Prepared 2026-11-05: metadata scanning uses `gpt-5.6-luna` through OpenAI's
+Responses API, matching the experimental bookmarker's model and credential.
+It sends the same capped page images and citation prompt in one request, with
+high image detail/reasoning, a 12,000-token output ceiling, a 300-second timeout,
+`store: false`, and a strict schema for the existing fields. Incomplete/refused
+responses and transport failures leave manual citation entry available. There
+is no Gemini fallback. No new scan or reading-accuracy claim is implied by the
+mocked transport tests. All 61 Worker tests pass. One real Responses API check
+using a supplied title-page text excerpt completed in 12.649 seconds with the
+expected contributor/title/series structure (3,727 input and 1,219 output tokens,
+including 1,034 reasoning tokens). This checks integration, not image-reading
+accuracy. Dry-run bundle comparison confirms reader/slicer/routes and library
+bytes match the deployed version outside this metadata module. Credential binding
+and deployment are separate from this source change.
 
 Released 2026-10-22: the same metadata request explicitly preserves
 compound surnames and historical/locative names instead of assuming the final

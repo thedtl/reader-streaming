@@ -35,25 +35,27 @@ const helpers = {
   },
 };
 
-async function requestSuggestion({ parsedAiResponse, responseEnvelope, fetchError, env = {}, lines = BIEREMA_LINES, images = [], sourceAuthorHint = "", sourceTitleHint = "" } = {}) {
+async function requestSuggestion({ parsedAiResponse, responseEnvelope, fetchError, responseStatus = 200, env = {}, lines = BIEREMA_LINES, images = [], sourceAuthorHint = "", sourceTitleHint = "" } = {}) {
   const originalFetch = globalThis.fetch;
-  let geminiRequestBody = null;
-  let geminiCallCount = 0;
-  let geminiRequestPath = "";
+  let providerRequestBody = null;
+  let providerCallCount = 0;
+  let providerRequestPath = "";
+  let providerRequestUrl = "";
+  let providerRequestInit = null;
   globalThis.fetch = async (url, init) => {
-    geminiCallCount += 1;
-    geminiRequestPath = new URL(url).pathname;
-    geminiRequestBody = JSON.parse(init?.body || "{}");
+    providerCallCount += 1;
+    providerRequestPath = new URL(url).pathname;
+    providerRequestUrl = String(url);
+    providerRequestInit = init;
+    providerRequestBody = JSON.parse(init?.body || "{}");
     if (fetchError) throw fetchError;
     if (!parsedAiResponse && !responseEnvelope) throw new Error("Unexpected provider request in test");
     return new Response(JSON.stringify(responseEnvelope || {
-      candidates: [{
-        finishReason: "STOP",
-        content: {
-          parts: [{ text: JSON.stringify(parsedAiResponse) }],
-        },
+      status: "completed",
+      output: [{ type: "message", role: "assistant", status: "completed",
+        content: [{ type: "output_text", text: JSON.stringify(parsedAiResponse) }],
       }],
-    }), { status: 200 });
+    }), { status: responseStatus });
   };
 
   try {
@@ -62,25 +64,25 @@ async function requestSuggestion({ parsedAiResponse, responseEnvelope, fetchErro
       body: JSON.stringify({ password: "test", lines, images, sourceAuthorHint, sourceTitleHint }),
     });
     const response = await handleSuggestHeading(request, env, helpers);
-    return { ...(await response.json()), geminiRequestBody, geminiCallCount, geminiRequestPath };
+    return { ...(await response.json()), providerRequestBody, providerCallCount, providerRequestPath, providerRequestUrl, providerRequestInit };
   } finally {
     globalThis.fetch = originalFetch;
   }
 }
 
-test("missing AI key leaves citation unfilled even with clean embedded text", async () => {
-  const result = await requestSuggestion();
+test("missing OpenAI key leaves citation unfilled without falling back to a Gemini key", async () => {
+  const result = await requestSuggestion({ env: { GEMINI_API_KEY: "unused-legacy-key" } });
 
   assert.equal(result.source, "unavailable");
   assert.equal(result.heading, "");
   assert.equal(result.title, "");
   assert.equal(result.firstContributor, null);
-  assert.equal(result.geminiCallCount, 0);
+  assert.equal(result.providerCallCount, 0);
 });
 
 test("bad AI heading-only citation is unfilled instead of repaired from embedded text", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       heading: "Learning, Adult. Second Edition.",
       visibleEvidence: {
@@ -95,7 +97,7 @@ test("bad AI heading-only citation is unfilled instead of repaired from embedded
 
 test("edition mistaken for title is unfilled instead of repaired from embedded text", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "Adult Learning",
       title: "Second Edition",
@@ -113,7 +115,7 @@ test("edition mistaken for title is unfilled instead of repaired from embedded t
 test("a genuine title about an edition remains valid without publication facts", async () => {
   const title = "The First Edition of Paradise Lost";
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "Smith, Jane", title,
       visibleEvidence: { contributor: "Jane Smith", title },
@@ -125,7 +127,7 @@ test("a genuine title about an edition remains valid without publication facts",
 
 test("complete AI heading passes with separately supported contributor and title", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       ...BIEREMA_CORE,
       heading: EXPECTED_BIEREMA_HEADING,
@@ -148,7 +150,7 @@ test("returned title reuses supported field display, including subtitles and non
     ["성경 강해설교 [Biblical Preaching]: 전달 [Delivery]", "성경 강해설교: 전달 [Biblical Preaching: Delivery]"],
   ]) {
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
+      env: { OPENAI_API_KEY: "fake" },
       parsedAiResponse: {
         contributor: "Smith, Jane", title,
         visibleEvidence: { contributor: "Jane Smith", title },
@@ -156,25 +158,25 @@ test("returned title reuses supported field display, including subtitles and non
     });
     assert.equal(result.title, displayedTitle);
     assert.equal(result.heading, `Smith, Jane. ${displayedTitle}.`);
-    assert.equal(result.geminiCallCount, 1);
+    assert.equal(result.providerCallCount, 1);
   }
 });
 
 test("returned title never comes from the final heading or unsupported/non-string fields", async () => {
   for (const title of [undefined, "", { text: "A Test Work" }, ["A Test Work"], 123]) {
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
+      env: { OPENAI_API_KEY: "fake" },
       parsedAiResponse: {
         contributor: "Smith, Jane", title, heading: "Smith, Jane. A Test Work.",
         visibleEvidence: { contributor: "Jane Smith", title: "A Test Work" },
       },
     });
     assert.equal(result.title, "");
-    assert.equal(result.geminiCallCount, 1);
+    assert.equal(result.providerCallCount, 1);
   }
   for (const visibleEvidence of [{ contributor: "Jane Smith" }, { title: "A Test Work" }]) {
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
+      env: { OPENAI_API_KEY: "fake" },
       parsedAiResponse: {
         contributor: "Smith, Jane", title: "A Test Work", heading: "Smith, Jane. A Test Work.", visibleEvidence,
       },
@@ -187,7 +189,7 @@ test("returned title never comes from the final heading or unsupported/non-strin
 test("a primary full heading stays authoritative while title is independently returned", async () => {
   const heading = "Smith, Jane. A Different Display Title. Example Press, 2026.";
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "Smith, Jane", title: "The Separately Read Title: With Its Subtitle", heading,
       visibleEvidence: { contributor: "Jane Smith", title: "The Separately Read Title With Its Subtitle" },
@@ -195,7 +197,7 @@ test("a primary full heading stays authoritative while title is independently re
   });
   assert.equal(result.heading, heading);
   assert.equal(result.title, "The Separately Read Title: With Its Subtitle");
-  assert.equal(result.geminiCallCount, 1);
+  assert.equal(result.providerCallCount, 1);
 });
 
 test("first contributor name components reuse the existing scan without rewriting the heading", async () => {
@@ -207,7 +209,7 @@ test("first contributor name components reuse the existing scan without rewritin
   ]) {
     const heading = `${contributor.replace(/\.$/, "")}. A Test Work: Its Subtitle.`;
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
+      env: { OPENAI_API_KEY: "fake" },
       parsedAiResponse: {
         contributor, firstContributor, title: "A Test Work: Its Subtitle", heading,
         visibleEvidence: { contributor, title: "A Test Work Its Subtitle" },
@@ -216,7 +218,7 @@ test("first contributor name components reuse the existing scan without rewritin
     assert.deepEqual(result.firstContributor, firstContributor);
     assert.equal(result.heading, heading);
     assert.equal(result.title, "A Test Work: Its Subtitle");
-    assert.equal(result.geminiCallCount, 1);
+    assert.equal(result.providerCallCount, 1);
   }
 });
 
@@ -229,17 +231,17 @@ test("missing, uncertain, malformed or unsupported name components stay absent",
     { ...valid, suffix: null }, { ...valid, givenNames: "수인", familyName: "이" },
   ]) {
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
+      env: { OPENAI_API_KEY: "fake" },
       parsedAiResponse: {
         contributor: "Jane Smith", firstContributor, title: "A Test Work",
         visibleEvidence: { contributor: "Jane Smith", title: "A Test Work" },
       },
     });
     assert.equal(result.firstContributor, null);
-    assert.equal(result.geminiCallCount, 1);
+    assert.equal(result.providerCallCount, 1);
   }
   const unsupported = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "Jane Smith", firstContributor: valid, title: "A Test Work",
       visibleEvidence: { title: "A Test Work" },
@@ -251,7 +253,7 @@ test("missing, uncertain, malformed or unsupported name components stay absent",
 
 test("first-contributor structure is normalized once and historical names remain unsplit", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "Jane M. Smith", title: "A Test Work",
       firstContributor: { givenNames: " Jane  M. ", familyName: " Smith ", suffix: " ", unused: "ignored" },
@@ -261,7 +263,7 @@ test("first-contributor structure is normalized once and historical names remain
   assert.deepEqual(result.firstContributor, { givenNames: "Jane M.", familyName: "Smith", suffix: "" });
   for (const contributor of ["Clement of Alexandria", "St. Augustine of Hippo", "A Scholarly Society"]) {
     const historical = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
+      env: { OPENAI_API_KEY: "fake" },
       parsedAiResponse: {
         contributor, title: "A Test Work", firstContributor: null,
         visibleEvidence: { contributor, title: "A Test Work" },
@@ -270,7 +272,7 @@ test("first-contributor structure is normalized once and historical names remain
     assert.equal(historical.firstContributor, null);
     assert.equal(historical.heading, `${contributor}. A Test Work.`);
   }
-  const prompt = result.geminiRequestBody.contents[0].parts[0].text;
+  const prompt = result.providerRequestBody.input[0].content[0].text;
   assert.match(prompt, /first leading modern Latin-script personal contributor/);
   assert.match(prompt, /visibleEvidence\.contributor as support/);
   assert.match(prompt, /compound\/double family name and its particles whole/);
@@ -296,44 +298,44 @@ test("name structure belongs to the page reader, not a last-word surname fallbac
   for (const contributor of names) {
     for (const heading of ["", `${contributor}. ${title}.`]) {
       const result = await requestSuggestion({
-        env: { GEMINI_API_KEY: "fake" },
+        env: { OPENAI_API_KEY: "fake" },
         parsedAiResponse: {
           contributor, title, heading,
           visibleEvidence: { contributor, title },
         },
       });
       assert.equal(result.heading, `${contributor}. ${title}.`);
-      assert.equal(result.geminiCallCount, 1);
+      assert.equal(result.providerCallCount, 1);
     }
   }
 });
 
 test("scanner prompt preserves observed name boundaries without another request", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "Clement of Alexandria", title: "A Test Work",
       visibleEvidence: { contributor: "CLEMENT OF ALEXANDRIA", title: "A TEST WORK" },
     },
   });
-  const prompt = result.geminiRequestBody.contents[0].parts[0].text;
+  const prompt = result.providerRequestBody.input[0].content[0].text;
   assert.match(prompt, /complete compound\/double surnames/);
   assert.match(prompt, /final word is not automatically the surname/);
   assert.match(prompt, /single historical name, epithet or locative/);
   assert.match(prompt, /preserve the visible name order and state the uncertainty/);
   assert.doesNotMatch(prompt, /shown as First Name Last Name, invert/);
-  assert.equal(result.geminiCallCount, 1);
+  assert.equal(result.providerCallCount, 1);
 });
 
 test("scanner uses cataloging selectively for current-volume facts, not contributor identity", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "Smith, Jane", title: "A Test Work", series: "A Commentary Series", seriesNumber: "40B",
       visibleEvidence: { contributor: "Jane Smith", title: "A Test Work", series: "A Commentary Series", seriesNumber: "40B" },
     },
   });
-  const prompt = result.geminiRequestBody.contents[0].parts[0].text;
+  const prompt = result.providerRequestBody.input[0].content[0].text;
   assert.match(prompt, /title page for title, contributor identity and responsibility/);
   assert.match(prompt, /imprint for this scanned edition's publication facts/);
   assert.match(prompt, /cataloging block for the current volume may corroborate its series name and exact volume designation/);
@@ -343,12 +345,12 @@ test("scanner uses cataloging selectively for current-volume facts, not contribu
   assert.match(prompt, /must not override a conflicting visible title-page name/);
   assert.doesNotMatch(prompt, /Ignore[^\n]*library-cataloging blocks/);
   assert.match(result.heading, /A Commentary Series, 40B\./);
-  assert.equal(result.geminiCallCount, 1);
+  assert.equal(result.providerCallCount, 1);
 });
 
 test("successful scan surfaces bounded text warnings through the existing note", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "María López García", title: "A Test Work",
       visibleEvidence: { contributor: "María López García", title: "A Test Work" },
@@ -365,26 +367,26 @@ test("successful scan surfaces bounded text warnings through the existing note",
   assert.equal(result.source, "ai");
   assert.equal(result.heading, "María López García. A Test Work.");
   assert.equal(result.note, "Please review the citation: Surname boundary is uncertain; visible order retained. Check the publication date. " + "x".repeat(177) + "... <b>Check the publisher.</b>");
-  assert.equal(result.geminiCallCount, 1);
+  assert.equal(result.providerCallCount, 1);
 });
 
 test("successful scans without usable warnings retain the normal review note", async () => {
   for (const warnings of [undefined, [], [null, {}, " "], "not an array"]) {
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
+      env: { OPENAI_API_KEY: "fake" },
       parsedAiResponse: {
         ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING,
         visibleEvidence: BIEREMA_CORE, warnings,
       },
     });
     assert.equal(result.note, "Read from the supplied pages. Please review the citation.");
-    assert.equal(result.geminiCallCount, 1);
+    assert.equal(result.providerCallCount, 1);
   }
 });
 
 test("garbled hidden text never overwrites the supported image reading", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [
       { text: "CREATES", pageNumber: 3, fontSize: 30 },
       { text: "P. BBovx", pageNumber: 3, fontSize: 16 },
@@ -411,7 +413,7 @@ test("garbled hidden text never overwrites the supported image reading", async (
   assert.match(result.heading, /God Who Creates: Essays in Honor of W\. Sibley Towner/);
   assert.match(result.heading, /2000\.$/);
   assert.doesNotMatch(result.heading, /BBovx|1989|Edited by\./);
-  assert.equal(result.geminiCallCount, 1);
+  assert.equal(result.providerCallCount, 1);
 });
 
 test("empty or unsupported AI core leaves citation unfilled without text fallback", async () => {
@@ -423,58 +425,92 @@ test("empty or unsupported AI core leaves citation unfilled without text fallbac
     { ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: { title: BIEREMA_CORE.title } },
     { ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: { contributor: BIEREMA_CORE.contributor } },
   ]) {
-    const result = await requestSuggestion({ env: { GEMINI_API_KEY: "fake" }, parsedAiResponse });
+    const result = await requestSuggestion({ env: { OPENAI_API_KEY: "fake" }, parsedAiResponse });
     assert.equal(result.heading, "");
     assert.equal(result.source, "none");
-    assert.equal(result.geminiCallCount, 1);
+    assert.equal(result.providerCallCount, 1);
   }
 });
 
 test("transport failure is unavailable, never a heuristic citation", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" }, fetchError: new Error("Simulated transport failure"),
+    env: { OPENAI_API_KEY: "fake" }, fetchError: new Error("Simulated transport failure"),
   });
   assert.equal(result.heading, "");
   assert.equal(result.source, "unavailable");
-  assert.equal(result.geminiCallCount, 1);
+  assert.equal(result.providerCallCount, 1);
 });
 
-test("response assembly joins text parts and excludes thinking content", async () => {
+test("HTTP errors and malformed JSON stay unavailable with one request", async () => {
+  for (const scenario of [
+    { responseStatus: 429, responseEnvelope: { error: { message: "provider-private-error" } } },
+    { responseStatus: 503, responseEnvelope: { error: { message: "provider-private-error" } } },
+    { responseEnvelope: { status: "completed", output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "not JSON" }] }] } },
+  ]) {
+    const result = await requestSuggestion({ env: { OPENAI_API_KEY: "fake" }, ...scenario });
+    assert.equal(result.source, "unavailable");
+    assert.equal(result.heading, "");
+    assert.equal(result.providerCallCount, 1);
+    assert.doesNotMatch(result.note, /provider-private-error/);
+  }
+});
+
+test("response assembly joins output text and excludes reasoning summaries", async () => {
   const answer = JSON.stringify({ ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: BIEREMA_CORE });
   const split = Math.floor(answer.length / 2);
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     responseEnvelope: {
-      candidates: [{ finishReason: "STOP", content: { parts: [
-        { thought: true, text: "Internal reasoning is not the JSON answer." },
-        { text: answer.slice(0, split) }, { text: answer.slice(split) },
-      ] } }],
+      status: "completed",
+      output: [
+        { type: "reasoning", summary: [{ type: "summary_text", text: "Not the JSON answer." }] },
+        { type: "message", role: "assistant", status: "completed", content: [
+          { type: "output_text", text: answer.slice(0, split) }, { type: "output_text", text: answer.slice(split) },
+        ] },
+      ],
     },
   });
   assert.equal(result.source, "ai");
   assert.equal(result.heading, EXPECTED_BIEREMA_HEADING);
-  assert.equal(result.geminiCallCount, 1);
+  assert.equal(result.providerCallCount, 1);
 });
 
 test("nonterminal response is rejected even when its partial JSON parses", async () => {
-  for (const finishReason of ["MAX_TOKENS", "FINISH_REASON_UNSPECIFIED", undefined]) {
+  for (const status of ["incomplete", "failed", "in_progress", undefined]) {
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
+      env: { OPENAI_API_KEY: "fake" },
       responseEnvelope: {
-        candidates: [{ finishReason, content: { parts: [{
-          text: JSON.stringify({ ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: BIEREMA_CORE }),
-        }] } }],
+        status, incomplete_details: { reason: "max_output_tokens" },
+        output: [{ type: "message", role: "assistant", status: "completed", content: [{
+          type: "output_text", text: JSON.stringify({ ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: BIEREMA_CORE }),
+        }] }],
       },
     });
     assert.equal(result.heading, "");
     assert.equal(result.source, "unavailable");
-    assert.equal(result.geminiCallCount, 1);
+    assert.equal(result.providerCallCount, 1);
+  }
+});
+
+test("completed refusals, missing text and incomplete messages stay unavailable", async () => {
+  const answer = JSON.stringify({ ...BIEREMA_CORE, heading: EXPECTED_BIEREMA_HEADING, visibleEvidence: BIEREMA_CORE });
+  for (const output of [
+    [],
+    [{ type: "reasoning", summary: [{ type: "summary_text", text: answer }] }],
+    [{ type: "message", role: "assistant", status: "completed", content: [{ type: "refusal", refusal: "Cannot comply" }] }],
+    [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: answer }, { type: "refusal", refusal: "Cannot comply" }] }],
+    [{ type: "message", role: "assistant", status: "incomplete", content: [{ type: "output_text", text: answer }] }],
+  ]) {
+    const result = await requestSuggestion({ env: { OPENAI_API_KEY: "fake" }, responseEnvelope: { status: "completed", output } });
+    assert.equal(result.heading, "");
+    assert.equal(result.source, "unavailable");
+    assert.equal(result.providerCallCount, 1);
   }
 });
 
 test("AI responsibility text normalizes all-caps names and removes order credentials", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -498,7 +534,7 @@ test("AI responsibility text normalizes all-caps names and removes order credent
 
 test("AI structured responsibility field is normalized before citation assembly", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -530,7 +566,7 @@ test("AI structured responsibility field is normalized before citation assembly"
 
 test("credential initials are removed without changing supplied contributor order", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -554,7 +590,7 @@ test("credential initials are removed without changing supplied contributor orde
 
 test("malformed AI name text is retained for review rather than guessing a repair", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -580,20 +616,20 @@ test("malformed AI name text is retained for review rather than guessing a repai
 test("structured contributors retain conjunctions instead of joining adjacent name tokens", async () => {
   for (const contributor of ["A. and Smith", "J. & Lee", "Smith, A. and Jones"]) {
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
+      env: { OPENAI_API_KEY: "fake" },
       parsedAiResponse: {
         contributor, title: "A Test Work",
         visibleEvidence: { contributor, title: "A Test Work" },
       },
     });
     assert.equal(result.heading, `${contributor}. A Test Work.`);
-    assert.equal(result.geminiCallCount, 1);
+    assert.equal(result.providerCallCount, 1);
   }
 });
 
 test("non-Latin title and subtitle use one combined bracketed English equivalent", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -616,7 +652,7 @@ test("non-Latin title and subtitle use one combined bracketed English equivalent
 
 test("split bracket repair applies to non-Latin scripts beyond Korean", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -639,7 +675,7 @@ test("split bracket repair applies to non-Latin scripts beyond Korean", async ()
 
 test("non-Latin title uses translated title in brackets instead of romanization", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -662,7 +698,7 @@ test("non-Latin title uses translated title in brackets instead of romanization"
 
 test("non-title citation fields keep original script without bracketed romanization", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -697,7 +733,7 @@ test("non-title citation fields keep original script without bracketed romanizat
 
 test("non-Latin comma author is kept as one author without added and", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -722,7 +758,7 @@ test("non-Latin comma author is kept as one author without added and", async () 
 
 test("Korean publication labels are accepted while production credits are ignored", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [
       { text: "이수인", pageNumber: 1, fontSize: 16, index: 1 },
       { text: "미디어 리터러시 수업", pageNumber: 1, fontSize: 28, index: 2 },
@@ -753,7 +789,7 @@ test("Korean publication labels are accepted while production credits are ignore
 test("clean AI heading wins over noisy support fields", async () => {
   const cleanHeading = "이수인 [Lee Su-in]. 미디어 리터러시 수업: 인포데믹 시대의 그리스도인을 위한 [Media Literacy Class: For Christians in the Infodemic Era]. 서울시: 도서출판 꿈미, 2023.";
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ pageNumber: 332, mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     sourceAuthorHint: "Lee Su-in",
@@ -784,7 +820,7 @@ test("clean AI heading wins over noisy support fields", async () => {
 
 test("AI heading publication tail is reconciled with visible publisher evidence", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ pageNumber: 332, mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     sourceAuthorHint: "Lee Su-in",
@@ -816,7 +852,7 @@ test("AI heading publication tail is reconciled with visible publisher evidence"
 
 test("AI editor role labels are normalized in final headings", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ pageNumber: 1, mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -845,7 +881,7 @@ test("AI editor role labels are normalized in final headings", async () => {
 
 test("structured editor contributors keep ed. with the author name", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ pageNumber: 1, mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -874,7 +910,7 @@ test("structured editor contributors keep ed. with the author name", async () =>
 
 test("prompt tells AI to omit collaborator and ToC article names for whole edited books", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [
       { text: "HUGUES COUSIN, JEAN-PIERRE LÉMONON, JEAN MASSONNET", pageNumber: 1, fontSize: 16 },
       { text: "avec la collaboration de", pageNumber: 1, fontSize: 12 },
@@ -902,7 +938,7 @@ test("prompt tells AI to omit collaborator and ToC article names for whole edite
     },
   });
 
-  const prompt = result.geminiRequestBody.contents[0].parts[0].text;
+  const prompt = result.providerRequestBody.input[0].content[0].text;
   assert.equal(
     result.heading,
     "Cousin, Hugues, ed. Le monde où vivait Jésus. Paris: Les Éditions du Cerf, 1998."
@@ -915,7 +951,7 @@ test("prompt tells AI to omit collaborator and ToC article names for whole edite
 
 test("supported AI heading wins over noisy OCR title extraction", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [
       { text: "Fam Ily TH Erapies", pageNumber: 1, fontSize: 30 },
       { text: "A Comprehensive Christian Appraisal", pageNumber: 1, fontSize: 18 },
@@ -953,7 +989,7 @@ test("supported AI heading wins over noisy OCR title extraction", async () => {
   assert.doesNotMatch(result.heading, /Fam Ily|TH Erapies|ABPR|ofpsychology|Universiry|2008/);
 });
 
-test("Worker forwards rendered front and imprint images to Gemini", async () => {
+test("Worker sends the same front and imprint images to the pinned Luna Responses API", async () => {
   const images = Array.from({ length: 20 }, (_, index) => ({
     pageNumber: index < 12 ? index + 1 : 320 + index,
     mimeType: "image/jpeg",
@@ -961,7 +997,7 @@ test("Worker forwards rendered front and imprint images to Gemini", async () => 
   }));
 
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images,
     parsedAiResponse: {
@@ -970,13 +1006,33 @@ test("Worker forwards rendered front and imprint images to Gemini", async () => 
     },
   });
 
-  const parts = result.geminiRequestBody.contents[0].parts;
+  const parts = result.providerRequestBody.input[0].content;
   const prompt = parts[0].text;
-  assert.equal(parts.filter(part => part.inlineData).length, 18);
-  assert.equal(result.geminiCallCount, 1);
-  assert.equal(result.geminiRequestPath, "/v1beta/models/gemini-2.5-flash:generateContent");
-  assert.deepEqual(result.geminiRequestBody.generationConfig, { temperature: 0.1, responseMimeType: "application/json" });
-  assert.deepEqual(parts.filter(part => part.inlineData).map(part => part.inlineData), images.slice(0, 18).map(({ mimeType, data }) => ({ mimeType, data })));
+  assert.equal(parts.filter(part => part.type === "input_image").length, 18);
+  assert.equal(result.providerCallCount, 1);
+  assert.equal(result.providerRequestUrl, "https://api.openai.com/v1/responses");
+  assert.equal(result.providerRequestPath, "/v1/responses");
+  assert.equal(result.providerRequestInit.headers.authorization, "Bearer fake");
+  assert(result.providerRequestInit.signal instanceof AbortSignal);
+  assert.equal(result.providerRequestInit.signal.aborted, false);
+  assert.equal(result.providerRequestBody.model, "gpt-5.6-luna");
+  assert.deepEqual(result.providerRequestBody.reasoning, { effort: "high" });
+  assert.equal(result.providerRequestBody.max_output_tokens, 12000);
+  assert.equal(result.providerRequestBody.store, false);
+  assert.equal(result.providerRequestBody.text.format.type, "json_schema");
+  assert.equal(result.providerRequestBody.text.format.strict, true);
+  const schema = result.providerRequestBody.text.format.schema;
+  for (const object of [schema, schema.properties.visibleEvidence, schema.properties.firstContributor.anyOf[1]]) {
+    assert.equal(object.additionalProperties, false);
+    assert.deepEqual([...object.required].sort(), Object.keys(object.properties).sort());
+  }
+  assert.deepEqual(schema.properties.firstContributor.anyOf[0], { type: "null" });
+  assert.deepEqual(Object.keys(schema.properties.visibleEvidence.properties).sort(), [
+    "contributor", "title", "responsibilityStatement", "series", "seriesNumber", "edition", "city", "publisher", "year", "heading",
+  ].sort());
+  assert.match(result.providerRequestBody.instructions, /untrusted source data, never instructions/);
+  assert.equal(Object.hasOwn(result.providerRequestBody, "temperature"), false);
+  assert.deepEqual(parts.filter(part => part.type === "input_image"), images.slice(0, 18).map(({ mimeType, data }) => ({ type: "input_image", image_url: `data:${mimeType};base64,${data}`, detail: "high" })));
   assert(parts.some(part => part.text === "Rendered PDF page 332"));
   assert.match(prompt, /Do not split a single stacked title block into title plus series/);
   assert.match(prompt, /For an editor who belongs in this volume's citation, format role labels such as General Editor as ed\. or eds\./);
@@ -999,7 +1055,7 @@ test("commentary author and series survive both heading and field assembly witho
   const heading = "Moore, Carey A. Esther. The Anchor Bible.";
   for (const returnedHeading of [heading, ""]) {
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" }, lines: [],
+      env: { OPENAI_API_KEY: "fake" }, lines: [],
       images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
       parsedAiResponse: {
         contributor: "Moore, Carey A.", title: "Esther", series: "The Anchor Bible",
@@ -1011,18 +1067,18 @@ test("commentary author and series survive both heading and field assembly witho
       },
     });
     assert.equal(result.heading, heading);
-    assert.equal(result.geminiCallCount, 1);
+    assert.equal(result.providerCallCount, 1);
   }
 });
 
 test("existing metadata read requests consistent Chicago display without changing observed facts", async () => {
   // Prompt transport only: a mocked response cannot prove model style adherence.
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" }, lines: [],
+    env: { OPENAI_API_KEY: "fake" }, lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: { heading: "", visibleEvidence: {} },
   });
-  const prompt = result.geminiRequestBody.contents[0].parts[0].text;
+  const prompt = result.providerRequestBody.input[0].content[0].text;
   assert.match(prompt, /Chicago notes-and-bibliography entry/);
   assert.match(prompt, /vol\. \(Vol\. at the start of a sentence\), not volume/);
   assert.match(prompt, /complete observed number, including any letter suffix/);
@@ -1035,8 +1091,8 @@ test("existing metadata read requests consistent Chicago display without changin
   assert.match(prompt, /Do not invent a number, contributor role, or series\/work relationship/);
   assert.match(prompt, /Omit absent details silently/);
   assert.doesNotMatch(prompt, /downloadVolume|multiVolumeWorkTitle|workVolume/);
-  assert.equal(result.geminiCallCount, 1);
-  assert.equal(result.geminiRequestBody.contents[0].parts.filter(part => part.inlineData).length, 1);
+  assert.equal(result.providerCallCount, 1);
+  assert.equal(result.providerRequestBody.input[0].content.filter(part => part.type === "input_image").length, 1);
   assert.equal(result.heading, "");
   assert.equal(Object.hasOwn(result, "downloadVolume"), false);
 });
@@ -1044,7 +1100,7 @@ test("existing metadata read requests consistent Chicago display without changin
 test("supported editions reach the response and an otherwise complete heading without another scan", async () => {
   for (const edition of ["Second Edition", "Revised and Expanded Edition", "3e édition", "개정판", "First edition"]) {
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" }, lines: [],
+      env: { OPENAI_API_KEY: "fake" }, lines: [],
       images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
       parsedAiResponse: {
         contributor: "Smith, Jane", title: "A Test Work", edition,
@@ -1056,8 +1112,8 @@ test("supported editions reach the response and an otherwise complete heading wi
     });
     assert.equal(result.edition, edition);
     assert.equal(result.heading, `Smith, Jane. A Test Work. ${edition}. A Series, vol. 40B. London: Example Press, 2025.`);
-    assert.equal(result.geminiCallCount, 1);
-    const prompt = result.geminiRequestBody.contents[0].parts[0].text;
+    assert.equal(result.providerCallCount, 1);
+    const prompt = result.providerRequestBody.input[0].content[0].text;
     assert.match(prompt, /printing\/impression number/);
     assert.match(prompt, /source edition cited by a translation is not this copy's edition/);
     assert.match(prompt, /Never infer a missing edition/);
@@ -1068,7 +1124,7 @@ test("equivalent edition abbreviations do not duplicate an edition or italicize 
   for (const [edition, display] of [["Second Edition", "2nd ed."], ["Revised Edition", "rev. ed."], ["3e édition", "3e édition"]]) {
     const heading = `Smith, Jane. A Test Work: Its Subtitle. ${display} London: Example Press, 2025.`;
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
+      env: { OPENAI_API_KEY: "fake" },
       parsedAiResponse: {
         contributor: "Smith, Jane", title: "A Test Work: Its Subtitle", edition, heading,
         visibleEvidence: { contributor: "Jane Smith", title: "A Test Work: Its Subtitle", edition },
@@ -1082,7 +1138,7 @@ test("equivalent edition abbreviations do not duplicate an edition or italicize 
 
 test("a supported edition follows contributor responsibility without changing its text", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "Augustine", title: "Confessions", edition: "2nd ed.",
       responsibilityStatement: "Translated by Jane Smith",
@@ -1095,7 +1151,7 @@ test("a supported edition follows contributor responsibility without changing it
 
 test("edition insertion preserves terminal title punctuation", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "Smith, Jane", title: "Why Read?", edition: "2nd ed.",
       heading: "Smith, Jane. Why Read? London: Example Press, 2025.",
@@ -1107,7 +1163,7 @@ test("edition insertion preserves terminal title punctuation", async () => {
 
 test("a title mentioning an edition does not stand in for the copy's edition statement", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "Smith, Jane", title: "The Second Edition of Paradise Lost", edition: "Second Edition",
       heading: "Smith, Jane. The Second Edition of Paradise Lost. London: Example Press, 2025.",
@@ -1121,7 +1177,7 @@ test("absent, malformed, unsupported or printing-only editions are not supplied 
   for (const [edition, evidence] of [[undefined, undefined], [null, undefined], [{ number: 2 }, "Second Edition"], ["Second Edition", undefined], ["Third printing", "Third printing"], ["초판 2쇄", "초판 2쇄 발행일 2023년"]]) {
     const heading = "Smith, Jane. A Test Work. London: Example Press, 2025.";
     const result = await requestSuggestion({
-      env: { GEMINI_API_KEY: "fake" },
+      env: { OPENAI_API_KEY: "fake" },
       parsedAiResponse: {
         contributor: "Smith, Jane", title: "A Test Work", edition, heading,
         visibleEvidence: { contributor: "Jane Smith", title: "A Test Work", edition: evidence },
@@ -1129,14 +1185,14 @@ test("absent, malformed, unsupported or printing-only editions are not supplied 
     });
     assert.equal(result.edition, "");
     assert.equal(result.heading, heading);
-    assert.equal(result.geminiCallCount, 1);
+    assert.equal(result.providerCallCount, 1);
   }
 });
 
 test("an edition with no safe heading boundary stays visible for manual review", async () => {
   const heading = "Smith, Jane. A Differently Read Title. Example Press, 2025.";
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     parsedAiResponse: {
       contributor: "Jane Smith", title: "A Test Work", edition: "2nd ed.", heading,
       visibleEvidence: { contributor: "Jane Smith", title: "A Test Work", edition: "Second Edition" },
@@ -1145,13 +1201,13 @@ test("an edition with no safe heading boundary stays visible for manual review",
   assert.equal(result.heading, heading);
   assert.equal(result.edition, "2nd ed.");
   assert.match(result.note, /edition was read but could not be safely placed/);
-  assert.equal(result.geminiCallCount, 1);
+  assert.equal(result.providerCallCount, 1);
 });
 
 test("citation cleanup preserves title dates and bracketed publication dates, not page locators", async () => {
   const heading = "Ward, W. Reginald, and Richard P. Heitzenrater, eds. Collected Letters (1848). Vol. 2. London: Example Press, [1990].";
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -1169,7 +1225,7 @@ test("citation cleanup preserves title dates and bracketed publication dates, no
 
 test("collected-work author, volume title and edition editors survive heading assembly", async () => {
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" },
+    env: { OPENAI_API_KEY: "fake" },
     lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
@@ -1186,14 +1242,14 @@ test("collected-work author, volume title and edition editors survive heading as
     },
   });
   assert.equal(result.heading, "Wesley, John. The Works of John Wesley, Volume 19: Journal and Diaries II (1738–43). Edited by W. Reginald Ward and Richard P. Heitzenrater. Nashville: Abingdon Press, 1990.");
-  assert.equal(result.geminiRequestBody.contents[0].parts.filter(part => part.inlineData).length, 1);
-  assert.equal(result.geminiCallCount, 1);
+  assert.equal(result.providerRequestBody.input[0].content.filter(part => part.type === "input_image").length, 1);
+  assert.equal(result.providerCallCount, 1);
 });
 
 test("publisher academic series stays in the citation without download volume metadata", async () => {
   const heading = "Smith, Jane. A Distinct Book Title. Wissenschaftliche Untersuchungen zum Neuen Testament, 421. Tübingen: Example Press, 2020.";
   const result = await requestSuggestion({
-    env: { GEMINI_API_KEY: "fake" }, lines: [],
+    env: { OPENAI_API_KEY: "fake" }, lines: [],
     images: [{ mimeType: "image/jpeg", data: "ZmFrZQ==" }],
     parsedAiResponse: {
       contributor: "Jane Smith", title: "A Distinct Book Title",
