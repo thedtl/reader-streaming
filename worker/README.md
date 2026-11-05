@@ -78,7 +78,7 @@ numbers.
 
 ## Citation metadata
 
-Prepared 2026-11-05: metadata scanning uses `gpt-5.6-luna` through OpenAI's
+Released 2026-11-05: metadata scanning uses `gpt-5.6-luna` through OpenAI's
 Responses API, matching the experimental bookmarker's model and credential.
 It sends the same capped page images and citation prompt in one request, with
 high image detail/reasoning, a 12,000-token output ceiling, a 300-second timeout,
@@ -90,8 +90,13 @@ using a supplied title-page text excerpt completed in 12.649 seconds with the
 expected contributor/title/series structure (3,727 input and 1,219 output tokens,
 including 1,034 reasoning tokens). This checks integration, not image-reading
 accuracy. Dry-run bundle comparison confirms reader/slicer/routes and library
-bytes match the deployed version outside this metadata module. Credential binding
-and deployment are separate from this source change.
+bytes match the deployed version outside this metadata module. Source `ebe2f59`
+is deployed as `4f588ad4-1361-4360-b9be-7eabd16c2895` at 100%, with the existing
+bookmarker key copied directly into an encrypted `OPENAI_API_KEY` binding.
+Live code matches the tested bundle; health, CORS, unauthorized-request rejection
+and streaming ToC-route exclusion pass. Existing runtime, bindings and trace
+settings are preserved; the old Gemini key is retained but unused. No new key,
+account, GCP secret, IAM grant, PDF processing or Cloud Run change.
 
 Released 2026-10-22: the same metadata request explicitly preserves
 compound surnames and historical/locative names instead of assuming the final
