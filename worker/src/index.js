@@ -530,6 +530,7 @@ async function proxyChapterPdf(request, env, payload) {
   const headers = corsHeaders(request, env);
   headers.set("content-type", "application/pdf");
   headers.set("content-length", String(chapterBytes.byteLength));
+  headers.set("x-dtl-chapter-bytes", String(chapterBytes.byteLength));
   headers.set("cache-control", "private, no-store");
   headers.set("accept-ranges", "none");
   headers.set("x-dtl-restriction-mode", "chapter-only-pdf");
@@ -588,6 +589,7 @@ async function proxyChapterPdfViaSlicer(request, env, payload, sourceBytes = 0) 
   copyHeader(slicerResponse.headers, headers, "x-dtl-source-pages");
   copyHeader(slicerResponse.headers, headers, "x-dtl-chapter-pages");
   copyHeader(slicerResponse.headers, headers, "x-dtl-chapter-page-count");
+  copyHeader(slicerResponse.headers, headers, "x-dtl-chapter-bytes");
   copyHeader(slicerResponse.headers, headers, "x-dtl-slicer-ms");
   setChapterFilename(headers, payload.fn);
 
@@ -1358,7 +1360,7 @@ function corsHeaders(request, env) {
     "access-control-allow-origin": origin,
     "access-control-allow-methods": "GET,HEAD,POST,OPTIONS",
     "access-control-allow-headers": "content-type,range",
-    "access-control-expose-headers": "accept-ranges,content-disposition,content-length,content-range,content-type,etag,last-modified,x-dtl-chapter-page-count,x-dtl-chapter-pages,x-dtl-fallback-reason,x-dtl-reader-session,x-dtl-restriction-mode,x-dtl-slicer-mode,x-dtl-slicer-ms,x-dtl-source-pages",
+    "access-control-expose-headers": "accept-ranges,content-disposition,content-length,content-range,content-type,etag,last-modified,x-dtl-chapter-bytes,x-dtl-chapter-page-count,x-dtl-chapter-pages,x-dtl-fallback-reason,x-dtl-reader-session,x-dtl-restriction-mode,x-dtl-slicer-mode,x-dtl-slicer-ms,x-dtl-source-pages",
     vary: "Origin",
   });
 }

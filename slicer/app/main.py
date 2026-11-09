@@ -135,6 +135,7 @@ async def slice_chapter(
         "x-dtl-source-pages": str(source_pages),
         "x-dtl-chapter-pages": f"{start_page}-{end_page}",
         "x-dtl-chapter-page-count": str(end_page - start_page + 1),
+        "x-dtl-chapter-bytes": str(output_bytes),
         "x-dtl-slicer-ms": str(elapsed_ms),
     })
 

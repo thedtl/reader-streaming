@@ -19,8 +19,12 @@ back to the entire source PDF. Faster first-page rendering remains unmeasured.
 
 Reader browser-storage keys use a separate streaming namespace. The Worker has
 no database or object-storage binding; the slicer keeps its temporary file
-lifecycle. PDF.js source maps remain the original snapshot: only storage-key
-literals were changed in `web/viewer.mjs`, without rebuilding PDF.js.
+lifecycle. The opening overlay shows preparation first, then a measured loading
+percentage from received chapter bytes. Unknown sizes remain indeterminate;
+there is no size display, extra request or estimate of server preparation.
+The slicer's exact output size travels in `X-DTL-Chapter-Bytes`, not Content-Length.
+PDF.js source maps remain the original snapshot; the bundled reader has narrow
+storage-key and transfer-progress changes without rebuilding PDF.js.
 
 See `worker/README.md` and `slicer/README.md` for configuration and local checks.
 Do not deploy this copy over the existing lab services.

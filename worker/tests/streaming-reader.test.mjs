@@ -77,7 +77,7 @@ test("large chapter returns the slicer's unbuffered stream without Content-Lengt
   let upstream;
   const body = new ReadableStream({ start(controller) { upstream = controller; } });
   const sliced = new Response(body, { headers: { "content-type": "application/pdf",
-    "content-length": "99999999", "x-dtl-chapter-page-count": "5" } });
+    "content-length": "99999999", "x-dtl-chapter-page-count": "5", "x-dtl-chapter-bytes": "3" } });
   t.mock.method(sliced, "arrayBuffer", () => { throw new Error("Do not buffer the chapter"); });
   const calls = mockUpstream(t, sliced);
   const filename = "Wesley, Works, Vol. 19 - Journál (서문).pdf";
@@ -86,6 +86,8 @@ test("large chapter returns the slicer's unbuffered stream without Content-Lengt
   assert.equal(response.status, 200);
   assert.equal(response.body, body);
   assert.equal(response.headers.get("content-length"), null);
+  assert.equal(response.headers.get("x-dtl-chapter-bytes"), "3");
+  assert.ok(response.headers.get("access-control-expose-headers").split(",").includes("x-dtl-chapter-bytes"));
   assert.equal(response.headers.get("x-dtl-restriction-mode"), "chapter-only-pdf");
   assert.equal(response.headers.get("x-dtl-reader-session"), "required");
   assert.equal(response.headers.get("x-dtl-chapter-page-count"), "5");
@@ -155,7 +157,10 @@ test("small chapter filenames preserve PDF title, ranges, and legacy behavior", 
     assert.equal(response.status, 200);
     if (filename) assertFilename(response, filename);
     else assert.equal(response.headers.get("content-disposition"), null);
-    const pdf = await PDFDocument.load(await response.arrayBuffer());
+    const chapterBytes = await response.arrayBuffer();
+    assert.equal(response.headers.get("x-dtl-chapter-bytes"), String(chapterBytes.byteLength));
+    assert.equal(response.headers.get("content-length"), String(chapterBytes.byteLength));
+    const pdf = await PDFDocument.load(chapterBytes);
     assert.equal(pdf.getTitle(), "Chapter");
     assert.deepEqual(pdf.getPages().map(page => page.getWidth()), [108, 109, 110, 111, 112]);
     assert.equal(response.headers.get("x-dtl-chapter-pages"), "8-12");
@@ -168,6 +173,7 @@ test("legacy streaming tokens do not acquire a response filename", async t => {
   const response = await worker.fetch(request(`/?token=${token}&session=${session}&filename=Patron.pdf`), env);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-disposition"), null);
+  assert.equal(response.headers.get("x-dtl-chapter-bytes"), null, "missing upstream size must stay unknown");
 });
 
 test("missing, changed, or wrong-browser credentials cannot bypass chapter access", async t => {

@@ -13138,6 +13138,9 @@ class PDFFetchStreamReader {
       });
       this._isRangeSupported = allowRangeRequests;
       this._contentLength = suggestedLength || this._contentLength;
+      // DTL: progress metadata only; do not change range support or PDF parsing.
+      const chapterBytes = Number(responseHeaders.get("X-DTL-Chapter-Bytes")) || suggestedLength;
+      this._dtlChapterBytes = Number.isSafeInteger(chapterBytes) && chapterBytes > 0 ? chapterBytes : undefined;
       this._filename = extractFilenameFromHeader(responseHeaders);
       if (!this._isStreamingSupported && this._isRangeSupported) {
         this.cancel(new AbortException("Streaming is disabled."));
@@ -13173,6 +13176,11 @@ class PDFFetchStreamReader {
       };
     }
     this._loaded += value.byteLength;
+    // Use received chunks, not PDF.js's estimated totals in non-streaming mode.
+    globalThis.DTL_updatePreparingProgress?.({
+      loaded: this._loaded,
+      total: this._dtlChapterBytes
+    });
     this.onProgress?.({
       loaded: this._loaded,
       total: this._contentLength

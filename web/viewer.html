@@ -112,7 +112,7 @@ See https://github.com/adobe-type-tools/cmap-resources
     const title = document.getElementById("dtl-gate-title");
     if (!title) return;
     const dots = ".".repeat(preparingDotCount);
-    title.textContent = "Preparing chapter" + dots;
+    title.textContent = "Preparing your chapter" + dots;
     preparingDotCount = preparingDotCount >= 3 ? 0 : preparingDotCount + 1;
   }
 
@@ -121,6 +121,7 @@ See https://github.com/adobe-type-tools/cmap-resources
     if (!gate) return;
 
     preparingStartedAt = Date.now();
+    preparingFinished = false;
     preparingDotCount = 0;
     stopPreparingTimers();
 
@@ -149,6 +150,19 @@ See https://github.com/adobe-type-tools/cmap-resources
     preparingSlowHintTimer = setTimeout(function() {
       if (slowHint) slowHint.style.display = "block";
     }, PREPARING_SLOW_HINT_MS);
+  };
+
+  window.DTL_updatePreparingProgress = function({ loaded, total }) {
+    if (!preparingStartedAt || preparingFinished || !Number.isFinite(loaded) || loaded <= 0) return;
+    const title = document.getElementById("dtl-gate-title");
+    if (!title) return;
+    stopPreparingTimers();
+    const slowHint = document.getElementById("dtl-gate-slow-hint");
+    if (slowHint) slowHint.style.display = "none";
+    // An absent/inconsistent size must never look like a measured percentage.
+    const knownTotal = Number.isSafeInteger(total) && total > 0 && loaded <= total;
+    const percent = knownTotal ? Math.floor(loaded / total * 100) : null;
+    title.textContent = "Preparing your chapter…" + (percent === null ? "" : " " + percent + "%");
   };
 
   window.DTL_finishPreparingChapter = async function() {

@@ -62,6 +62,7 @@ class StreamingResponseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(headers[b"content-disposition"], b'attachment; filename="chapter.pdf"')
                 self.assertEqual(headers[b"cache-control"], b"private, no-store")
                 self.assertEqual(headers[b"x-dtl-chapter-pages"], b"3-8")
+                self.assertEqual(headers[b"x-dtl-chapter-bytes"], str(size).encode("ascii"))
             else:
                 body = message["body"]
                 self.assertLessEqual(len(body), main.RESPONSE_CHUNK_BYTES)
